@@ -154,5 +154,26 @@ intellijPlatformTesting {
                 robotServerPlugin()
             }
         }
+
+        register("headless") {
+            task {
+                val root = providers.gradleProperty("root").orNull
+
+                // Program (application) arguments of the IDE
+                args(listOfNotNull(
+                    "codecocoon",
+                    root,
+                ))
+
+                // JVM arguments of the IDE process
+                jvmArgs(
+                    "-Xmx16G",
+                    "-Djava.awt.headless=true",
+                    "--add-exports", "java.base/jdk.internal.vm=ALL-UNNAMED",
+                    "-Didea.system.path",
+                    "-Dproject.open.type=Gradle",
+                )
+            }
+        }
     }
 }
