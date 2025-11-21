@@ -81,7 +81,7 @@ object ProjectApplicationUtils {
     private val logger = LoggerFactory.getLogger(javaClass)
 
     /**
-     * Rewritten from {@link com.intellij.codeInspection.InspectionApplicationBase}.
+     * Rewritten from [com.intellij.codeInspection.InspectionApplicationBase].
      * Implementation which reuse InspectionApplicationBase:
      *
      * val app = object : InspectionApplicationBase() {

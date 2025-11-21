@@ -1,68 +1,102 @@
 package com.github.pderakhshanfar.codecocoonplugin.startup
 
-import com.intellij.openapi.application.ApplicationManager
+import com.github.pderakhshanfar.codecocoonplugin.services.TransformationService
+import com.intellij.openapi.Disposable
 import com.intellij.openapi.application.ApplicationStarter
+import com.intellij.openapi.application.EDT
+import com.intellij.openapi.application.ReadAction
+import com.intellij.openapi.application.WriteIntentReadAction
+import com.intellij.openapi.application.readAction
+import com.intellij.openapi.application.readAndWriteAction
+import com.intellij.openapi.application.writeAction
+import com.intellij.openapi.application.writeIntentReadAction
+import com.intellij.openapi.components.service
 import com.intellij.openapi.diagnostic.thisLogger
-import com.intellij.openapi.project.DumbService
 import com.intellij.openapi.project.ProjectManager
 import com.intellij.openapi.util.Disposer
-import kotlinx.serialization.ExperimentalSerializationApi
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
 import java.io.File
 import java.nio.file.Paths
 import kotlin.system.exitProcess
 
+/**
+ * Application starter for running CodeCocoon in headless mode.
+ * This is the entry point when the IDE is launched with the 'codecocoon' command.
+ */
 class HeadlessModeStarter : ApplicationStarter {
-    /** Sets the main (start) thread for the IDE in headless as not edt. */
+    /** Sets the main (start) thread for the IDE in headless as not EDT. */
     override val requiredModality: Int = ApplicationStarter.NOT_IN_EDT
 
-    @OptIn(ExperimentalSerializationApi::class)
     override fun main(args: List<String>) {
+        val logger = thisLogger()
 
-        // Project path
-        val projectPath = args[1]
-
-        // remove the `.idea` folder in the $projectPath if exists
-        val ideaFolderPath = "$projectPath${File.separator}.idea"
-        val ideaFolder = File(ideaFolderPath)
-        if (ideaFolder.exists()) {
-            ideaFolder.deleteRecursively()
-        }
-
-        println("[CodeCocoon Starter] Opening project")
-
-        // open and resolve the project
-        val project = try {
-            JvmProjectConfigurator().openProject(
-                Paths.get(projectPath),
-                fullResolve = true,
-                parentDisposable = Disposer.newDisposable(),
-            )
-        } catch (e: Throwable) {
-            e.printStackTrace(System.err)
+        // Validate arguments
+        if (args.size < 2) {
+            logger.error("[CodeCocoon Starter] Missing project path argument")
+            System.err.println("Usage: codecocoon <project-path>")
             exitProcess(1)
         }
 
-        println("[CodeCocoon Starter] Project opened successfully: ${project}")
+        val projectPath = args[1]
+        logger.info("[CodeCocoon Starter] Starting with project path: $projectPath")
 
-        ApplicationManager.getApplication().invokeAndWait {
-            project.let {
-                DumbService.getInstance(it).runWhenSmart {
-                    try {
-                        println("[CodeCocoon] Project is smart")
-                    } catch (e: Throwable) {
-                        thisLogger().error("[CodeCocoon Starter] Exiting the headless mode with an exception")
+        // Clean .idea folder to ensure fresh indexing
+        cleanIdeaFolder(projectPath)
 
-                        ProjectManager.getInstance().closeAndDispose(project)
-                        e.printStackTrace(System.err)
-                        exitProcess(1)
-                    }
+        // Use runBlocking to run coroutine-based code
+        runBlocking {
+            val disposable = Disposer.newDisposable()
+            try {
+                // Open and resolve the project
+                val project = openProject(projectPath, disposable)
+
+                // Execute a transformation pipeline using the service
+                val transformationService = service<TransformationService>()
+                // TODO: add projectPath as argument
+                transformationService.executeTransformations(project, projectPath)
+
+                // Success - clean exit
+                logger.info("[CodeCocoon Starter] Execution completed successfully")
+
+                withContext(Dispatchers.EDT) {
                     ProjectManager.getInstance().closeAndDispose(project)
-                    exitProcess(0)
+                    logger.info("[CodeCocoon Starter] Project is closed successfully")
+                    println("[CodeCocoon Starter] Project is closed successfully")
                 }
+                exitProcess(0)
+            } catch (e: Throwable) {
+                logger.error("[CodeCocoon Starter] Execution failed with exception", e)
+                e.printStackTrace(System.err)
+                Disposer.dispose(disposable)
+                exitProcess(1)
             }
         }
-        thisLogger().warn("[CodeCocoon Starter] Smart mode not initialized")
-        ProjectManager.getInstance().closeAndDispose(project)
-        exitProcess(1)
+    }
+
+    private fun cleanIdeaFolder(projectPath: String) {
+        val ideaFolderPath = "$projectPath${File.separator}.idea"
+        val ideaFolder = File(ideaFolderPath)
+        if (ideaFolder.exists()) {
+            thisLogger().info("[CodeCocoon Starter] Removing existing .idea folder")
+            ideaFolder.deleteRecursively()
+        }
+    }
+
+    private suspend fun openProject(projectPath: String, disposable: Disposable) = try {
+        thisLogger().info("[CodeCocoon Starter] Opening project: $projectPath")
+
+        val project = JvmProjectConfigurator().openProject(
+            Paths.get(projectPath),
+            fullResolve = true,
+            parentDisposable = disposable,
+        )
+
+        thisLogger().info("[CodeCocoon Starter] Project opened successfully: ${project.name}")
+        project
+    } catch (e: Throwable) {
+        thisLogger().error("[CodeCocoon Starter] Failed to open project", e)
+        throw e
     }
 }
