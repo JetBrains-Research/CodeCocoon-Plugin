@@ -4,12 +4,6 @@ import com.github.pderakhshanfar.codecocoonplugin.services.TransformationService
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.application.ApplicationStarter
 import com.intellij.openapi.application.EDT
-import com.intellij.openapi.application.ReadAction
-import com.intellij.openapi.application.WriteIntentReadAction
-import com.intellij.openapi.application.readAction
-import com.intellij.openapi.application.readAndWriteAction
-import com.intellij.openapi.application.writeAction
-import com.intellij.openapi.application.writeIntentReadAction
 import com.intellij.openapi.components.service
 import com.intellij.openapi.diagnostic.thisLogger
 import com.intellij.openapi.project.ProjectManager
