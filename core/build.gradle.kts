@@ -18,14 +18,8 @@ dependencies {
     intellijPlatform {
         val platformType: String by project
         val platformVersion: String by project
-
-        println("platformType: $platformType, platformVersion: $platformVersion")
-
-        when (platformType) {
-            "IC" -> intellijIdeaCommunity(platformVersion)
-            "IU" -> intellijIdeaUltimate(platformVersion)
-            else -> intellijIdea(platformVersion)
-        }
+        println("[:core Module]: creating platform=$platformType with version=$platformVersion")
+        create(platformType, platformVersion)
     }
 
     testImplementation(platform("org.junit:junit-bom:5.10.0"))

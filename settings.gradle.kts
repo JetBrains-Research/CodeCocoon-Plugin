@@ -4,4 +4,4 @@ plugins {
 
 rootProject.name = "CodeCocoon-Plugin"
 
-include(":core")
+include("core")
