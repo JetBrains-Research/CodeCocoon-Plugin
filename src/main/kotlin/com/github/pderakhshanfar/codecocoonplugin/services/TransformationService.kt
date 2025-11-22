@@ -17,9 +17,8 @@ import kotlinx.coroutines.withContext
  * on projects in headless mode.
  *
  * This service orchestrates the entire transformation lifecycle:
- * 1. Wait for project indexing to complete
  * 2. Discover and list project files
- * 3. Apply transformations (future: renaming, refactoring, etc.)
+ * 3. Apply transformations (renaming, refactoring, etc.)
  */
 @Service(Service.Level.APP)
 class TransformationService {
@@ -29,14 +28,12 @@ class TransformationService {
      * Executes the transformation pipeline for a given project.
      *
      * @param project The opened project to transform
+     * @param projectPath The path to the project's root directory (usually user-provided)
      * @throws Exception if any step fails
      */
     suspend fun executeTransformations(project: Project, projectPath: String) {
         logger.info("[TransformationService] Starting transformation pipeline for project: ${project.name}")
         println("[TransformationService] Starting transformation pipeline for project: ${project.name}")
-
-        // Step 1: Wait for indexing to complete
-        // waitForIndexing(project)
 
         // Step 2: List all project files
         val files = listProjectFiles(project)
@@ -48,26 +45,9 @@ class TransformationService {
         println("[TransformationService] Transformation pipeline completed successfully")
     }
 
-    // TODO: delete the method? because of `smartReadAction`
-    /**
-     * Waits for the project to finish indexing using modern coroutine API.
-     * This replaces the old callback-based DumbService.runWhenSmart approach.
-     */
-    private suspend fun waitForIndexing(project: Project) {
-        logger.info("[TransformationService] Waiting for project indexing to complete...")
-        println("[TransformationService] Waiting for project indexing to complete...")
-
-        // Modern coroutine-based approach - suspends until indexing is done
-        // DumbService.getInstance(project).waitForSmartMode() // .suspendUntilSmartMode()
-        project.waitForSmartMode()
-
-        logger.info("[TransformationService] Project indexing completed - smart mode active")
-        println("[TransformationService] Project indexing completed - smart mode active")
-    }
-
     /**
      * Lists all files in the project, returning their paths relative to project root.
-     * Uses read action to safely access virtual file system.
+     * Uses [smartReadAction] to safely access virtual file system.
      */
     private suspend fun listProjectFiles(project: Project): List<String> = withContext(Dispatchers.IO) {
         logger.info("[TransformationService] Discovering project files...")
@@ -98,7 +78,7 @@ class TransformationService {
         logger.info("[TransformationService] Found ${files.size} files in project")
         println("[TransformationService] Found ${files.size} files in project")
 
-        files
+        return@withContext files
     }
 
     /**
@@ -110,6 +90,7 @@ class TransformationService {
         println("=== End of File List ===\n")
     }
 
-    // Future extension point for transformation strategies
-    // suspend fun applyTransformation(project: Project, strategy: TransformationStrategy)
+    /*suspend fun applyTransformation(project: Project, strategy: TransformationStrategy) {
+        TODO(implement)
+    }*/
 }

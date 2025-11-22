@@ -1,6 +1,7 @@
-package com.github.pderakhshanfar.codecocoonplugin.startup
+package com.github.pderakhshanfar.codecocoonplugin.appstarter
 
 import com.github.pderakhshanfar.codecocoonplugin.services.TransformationService
+import com.github.pderakhshanfar.codecocoonplugin.components.JvmProjectConfigurator
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.application.ApplicationStarter
 import com.intellij.openapi.application.EDT
@@ -48,7 +49,6 @@ class HeadlessModeStarter : ApplicationStarter {
 
                 // Execute a transformation pipeline using the service
                 val transformationService = service<TransformationService>()
-                // TODO: add projectPath as argument
                 transformationService.executeTransformations(project, projectPath)
 
                 // Success - clean exit
@@ -59,6 +59,7 @@ class HeadlessModeStarter : ApplicationStarter {
                     logger.info("[CodeCocoon Starter] Project is closed successfully")
                     println("[CodeCocoon Starter] Project is closed successfully")
                 }
+
                 exitProcess(0)
             } catch (e: Throwable) {
                 logger.error("[CodeCocoon Starter] Execution failed with exception", e)
@@ -83,8 +84,8 @@ class HeadlessModeStarter : ApplicationStarter {
 
         val project = JvmProjectConfigurator().openProject(
             Paths.get(projectPath),
-            fullResolve = true,
             parentDisposable = disposable,
+            fullResolveRequired = true,
         )
 
         thisLogger().info("[CodeCocoon Starter] Project opened successfully: ${project.name}")

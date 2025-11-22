@@ -11,7 +11,7 @@
     <resource-bundle>messages.MyBundle</resource-bundle>
 
     <extensions defaultExtensionNs="com.intellij">
-        <appStarter implementation="com.github.pderakhshanfar.codecocoonplugin.startup.HeadlessModeStarter"
+        <appStarter implementation="com.github.pderakhshanfar.codecocoonplugin.appstarter.HeadlessModeStarter"
         id="codecocoon"/>
     </extensions>
 </idea-plugin>
