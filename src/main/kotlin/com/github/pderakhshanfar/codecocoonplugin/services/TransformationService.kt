@@ -34,10 +34,10 @@ class TransformationService {
         logger.info("[TransformationService] Starting transformation pipeline for project: ${project.name}")
         println("[TransformationService] Starting transformation pipeline for project: ${project.name}")
 
-        // Step 2: List all project files
+        // Step 1: List all project files
         val files = listProjectFiles(project)
 
-        // Step 3: Print files to the console
+        // Step 2: Print files to the console
         printFiles(files)
 
         logger.info("[TransformationService] Transformation pipeline completed successfully")
