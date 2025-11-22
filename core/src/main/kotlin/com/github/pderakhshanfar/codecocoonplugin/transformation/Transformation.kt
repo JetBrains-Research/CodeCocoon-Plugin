@@ -1,0 +1,4 @@
+package com.github.pderakhshanfar.codecocoonplugin.transformation
+
+
+interface Transformation

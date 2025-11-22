@@ -1,7 +1,6 @@
-package com.github.pderakhshanfar.codecocoonplugin
+package com.github.pderakhshanfar.codecocoonplugin.common
 
 
-// TODO: add to core
 /**
  * Base class exception for all custom exceptions.
  */

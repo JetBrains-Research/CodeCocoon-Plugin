@@ -1,6 +1,6 @@
 package com.github.pderakhshanfar.codecocoonplugin.components
 
-import com.github.pderakhshanfar.codecocoonplugin.ProjectConfiguratorFailed
+import com.github.pderakhshanfar.codecocoonplugin.common.ProjectConfiguratorFailed
 import com.intellij.conversion.ConversionListener
 import com.intellij.conversion.ConversionService
 import com.intellij.ide.CommandLineInspectionProgressReporter
