@@ -48,7 +48,7 @@ class TransformationService {
      * Lists all files in the project, returning their paths relative to project root.
      * Uses [smartReadAction] to safely access virtual file system.
      */
-    private suspend fun listProjectFiles(project: Project): List<String> = withContext(Dispatchers.IO) {
+    private suspend fun listProjectFiles(project: Project): List<String> {
         logger.info("[TransformationService] Discovering project files...")
         println("[TransformationService] Discovering project files...")
 
@@ -77,7 +77,7 @@ class TransformationService {
         logger.info("[TransformationService] Found ${files.size} files in project")
         println("[TransformationService] Found ${files.size} files in project")
 
-        return@withContext files
+        return files
     }
 
     /**
