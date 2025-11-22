@@ -48,18 +48,25 @@ class HeadlessModeStarter : ApplicationStarter {
                 val project = openProject(projectPath, disposable)
 
                 // Execute a transformation pipeline using the service
-                val transformationService = service<TransformationService>()
-                transformationService.executeTransformations(project, projectPath)
+                runCatching {
+                    val transformationService = service<TransformationService>()
+                    transformationService.executeTransformations(project, projectPath)
+                }.onFailure { err ->
+                    logger.error("[CodeCocoon Starter] Transformation Service failed with exception", err)
+                    err.printStackTrace(System.err)
+                }.onSuccess {
+                    logger.info("[CodeCocoon Starter] Transformation Service completed successfully")
+                    println("[CodeCocoon Starter] Transformation Service completed successfully")
+                }
 
-                // Success - clean exit
-                logger.info("[CodeCocoon Starter] Execution completed successfully")
+                // close project and exit
+                logger.info("[CodeCocoon Starter] Execution completed")
 
                 withContext(Dispatchers.EDT) {
                     ProjectManager.getInstance().closeAndDispose(project)
                     logger.info("[CodeCocoon Starter] Project is closed successfully")
                     println("[CodeCocoon Starter] Project is closed successfully")
                 }
-
                 exitProcess(0)
             } catch (e: Throwable) {
                 logger.error("[CodeCocoon Starter] Execution failed with exception", e)
