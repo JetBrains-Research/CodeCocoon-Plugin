@@ -67,6 +67,7 @@ class HeadlessModeStarter : ApplicationStarter {
                     logger.info("[CodeCocoon Starter] Project is closed successfully")
                     println("[CodeCocoon Starter] Project is closed successfully")
                 }
+                Disposer.dispose(disposable)
                 exitProcess(0)
             } catch (e: Throwable) {
                 logger.error("[CodeCocoon Starter] Execution failed with exception", e)
