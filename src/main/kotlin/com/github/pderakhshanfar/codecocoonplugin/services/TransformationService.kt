@@ -16,8 +16,8 @@ import kotlinx.coroutines.withContext
  * on projects in headless mode.
  *
  * This service orchestrates the entire transformation lifecycle:
- * 2. Discover and list project files
- * 3. Apply transformations (renaming, refactoring, etc.)
+ * 1. Discover and list project files
+ * 1. Apply transformations (renaming, refactoring, etc.)
  */
 @Service(Service.Level.APP)
 class TransformationService {
