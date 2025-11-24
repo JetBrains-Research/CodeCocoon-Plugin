@@ -14,6 +14,10 @@ repositories {
     }
 }
 
+kotlin {
+    jvmToolchain(21)
+}
+
 dependencies {
     intellijPlatform {
         val platformType: String by project
