@@ -1,10 +1,11 @@
 package com.github.pderakhshanfar.codecocoonplugin.appstarter
 
-import com.github.pderakhshanfar.codecocoonplugin.config.ConfigLoader
-import com.github.pderakhshanfar.codecocoonplugin.services.TransformationService
-import com.github.pderakhshanfar.codecocoonplugin.components.JvmProjectConfigurator
 import com.github.pderakhshanfar.codecocoonplugin.components.transformations.TransformationRegistry
 import com.github.pderakhshanfar.codecocoonplugin.config.CodeCocoonConfig
+import com.github.pderakhshanfar.codecocoonplugin.config.ConfigLoader
+import com.github.pderakhshanfar.codecocoonplugin.intellij.JvmProjectConfigurator
+import com.github.pderakhshanfar.codecocoonplugin.intellij.logging.withStdout
+import com.github.pderakhshanfar.codecocoonplugin.services.TransformationService
 import com.github.pderakhshanfar.codecocoonplugin.transformation.Transformation
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.application.ApplicationStarter
@@ -27,10 +28,9 @@ import kotlin.system.exitProcess
 class HeadlessModeStarter : ApplicationStarter {
     /** Sets the main (start) thread for the IDE in headless as not EDT. */
     override val requiredModality: Int = ApplicationStarter.NOT_IN_EDT
+    private val logger = thisLogger().withStdout()
 
     override fun main(args: List<String>) {
-        val logger = thisLogger()
-
         val config = ConfigLoader.load()
         val projectPath = config.projectRoot
         if (projectPath.isNullOrBlank()) {
@@ -38,7 +38,6 @@ class HeadlessModeStarter : ApplicationStarter {
             exitProcess(1)
         }
 
-        println("[CodeCocoon Starter] Starting with project path: $projectPath")
         logger.info("[CodeCocoon Starter] Starting with project path: $projectPath")
 
         // Clean .idea folder to ensure fresh indexing
@@ -59,13 +58,13 @@ class HeadlessModeStarter : ApplicationStarter {
                 // Execute a transformation pipeline using the service
                 runCatching {
                     val transformationService = service<TransformationService>()
+                    // TODO: add `AddCommentTransformation` into config yaml
                     transformationService.executeTransformations(project, config, transformations)
                 }.onFailure { err ->
                     logger.error("[CodeCocoon Starter] Transformation Service failed with exception", err)
                     err.printStackTrace(System.err)
                 }.onSuccess {
                     logger.info("[CodeCocoon Starter] Transformation Service completed successfully")
-                    println("[CodeCocoon Starter] Transformation Service completed successfully")
                 }
 
                 // close project and exit
@@ -74,7 +73,6 @@ class HeadlessModeStarter : ApplicationStarter {
                 withContext(Dispatchers.EDT) {
                     ProjectManager.getInstance().closeAndDispose(project)
                     logger.info("[CodeCocoon Starter] Project is closed successfully")
-                    println("[CodeCocoon Starter] Project is closed successfully")
                 }
                 Disposer.dispose(disposable)
                 exitProcess(0)
@@ -91,13 +89,13 @@ class HeadlessModeStarter : ApplicationStarter {
         val ideaFolderPath = "$projectPath${File.separator}.idea"
         val ideaFolder = File(ideaFolderPath)
         if (ideaFolder.exists()) {
-            thisLogger().info("[CodeCocoon Starter] Removing existing .idea folder")
+            logger.info("[CodeCocoon Starter] Removing existing .idea folder")
             ideaFolder.deleteRecursively()
         }
     }
 
     private suspend fun openProject(projectPath: String, disposable: Disposable) = try {
-        thisLogger().info("[CodeCocoon Starter] Opening project: $projectPath")
+        logger.info("[CodeCocoon Starter] Opening project: $projectPath")
 
         val project = JvmProjectConfigurator().openProject(
             Paths.get(projectPath),
@@ -105,10 +103,10 @@ class HeadlessModeStarter : ApplicationStarter {
             fullResolveRequired = true,
         )
 
-        thisLogger().info("[CodeCocoon Starter] Project opened successfully: ${project.name}")
+        logger.info("[CodeCocoon Starter] Project opened successfully: ${project.name}")
         project
     } catch (e: Throwable) {
-        thisLogger().error("[CodeCocoon Starter] Failed to open project", e)
+        logger.error("[CodeCocoon Starter] Failed to open project", e)
         throw e
     }
 
@@ -139,5 +137,4 @@ class HeadlessModeStarter : ApplicationStarter {
 
         return result
     }
-
 }
