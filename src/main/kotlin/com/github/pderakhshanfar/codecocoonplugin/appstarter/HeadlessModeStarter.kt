@@ -1,7 +1,9 @@
 package com.github.pderakhshanfar.codecocoonplugin.appstarter
 
+import com.github.pderakhshanfar.codecocoonplugin.components.transformation.AddCommentTransformation
+import com.github.pderakhshanfar.codecocoonplugin.intellij.JvmProjectConfigurator
+import com.github.pderakhshanfar.codecocoonplugin.intellij.logging.withStdout
 import com.github.pderakhshanfar.codecocoonplugin.services.TransformationService
-import com.github.pderakhshanfar.codecocoonplugin.components.JvmProjectConfigurator
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.application.ApplicationStarter
 import com.intellij.openapi.application.EDT
@@ -23,10 +25,9 @@ import kotlin.system.exitProcess
 class HeadlessModeStarter : ApplicationStarter {
     /** Sets the main (start) thread for the IDE in headless as not EDT. */
     override val requiredModality: Int = ApplicationStarter.NOT_IN_EDT
+    private val logger = thisLogger().withStdout()
 
     override fun main(args: List<String>) {
-        val logger = thisLogger()
-
         // Validate arguments
         if (args.size < 2) {
             logger.error("[CodeCocoon Starter] Missing project path argument")
@@ -50,13 +51,16 @@ class HeadlessModeStarter : ApplicationStarter {
                 // Execute a transformation pipeline using the service
                 runCatching {
                     val transformationService = service<TransformationService>()
-                    transformationService.executeTransformations(project, projectPath)
+                    transformationService.executeTransformations(
+                        project = project,
+                        projectPath = projectPath,
+                        transformations = listOf(AddCommentTransformation()),
+                    )
                 }.onFailure { err ->
                     logger.error("[CodeCocoon Starter] Transformation Service failed with exception", err)
                     err.printStackTrace(System.err)
                 }.onSuccess {
                     logger.info("[CodeCocoon Starter] Transformation Service completed successfully")
-                    println("[CodeCocoon Starter] Transformation Service completed successfully")
                 }
 
                 // close project and exit
@@ -65,7 +69,6 @@ class HeadlessModeStarter : ApplicationStarter {
                 withContext(Dispatchers.EDT) {
                     ProjectManager.getInstance().closeAndDispose(project)
                     logger.info("[CodeCocoon Starter] Project is closed successfully")
-                    println("[CodeCocoon Starter] Project is closed successfully")
                 }
                 Disposer.dispose(disposable)
                 exitProcess(0)
@@ -82,13 +85,13 @@ class HeadlessModeStarter : ApplicationStarter {
         val ideaFolderPath = "$projectPath${File.separator}.idea"
         val ideaFolder = File(ideaFolderPath)
         if (ideaFolder.exists()) {
-            thisLogger().info("[CodeCocoon Starter] Removing existing .idea folder")
+            logger.info("[CodeCocoon Starter] Removing existing .idea folder")
             ideaFolder.deleteRecursively()
         }
     }
 
     private suspend fun openProject(projectPath: String, disposable: Disposable) = try {
-        thisLogger().info("[CodeCocoon Starter] Opening project: $projectPath")
+        logger.info("[CodeCocoon Starter] Opening project: $projectPath")
 
         val project = JvmProjectConfigurator().openProject(
             Paths.get(projectPath),
@@ -96,10 +99,10 @@ class HeadlessModeStarter : ApplicationStarter {
             fullResolveRequired = true,
         )
 
-        thisLogger().info("[CodeCocoon Starter] Project opened successfully: ${project.name}")
+        logger.info("[CodeCocoon Starter] Project opened successfully: ${project.name}")
         project
     } catch (e: Throwable) {
-        thisLogger().error("[CodeCocoon Starter] Failed to open project", e)
+        logger.error("[CodeCocoon Starter] Failed to open project", e)
         throw e
     }
 }
