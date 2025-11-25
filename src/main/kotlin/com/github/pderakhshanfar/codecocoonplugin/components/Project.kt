@@ -1,5 +1,6 @@
-package com.github.pderakhshanfar.codecocoonplugin.startup
+package com.github.pderakhshanfar.codecocoonplugin.components
 
+import com.github.pderakhshanfar.codecocoonplugin.common.ProjectConfiguratorFailed
 import com.intellij.conversion.ConversionListener
 import com.intellij.conversion.ConversionService
 import com.intellij.ide.CommandLineInspectionProgressReporter
@@ -14,11 +15,8 @@ import com.intellij.openapi.application.ex.ApplicationManagerEx
 import com.intellij.openapi.progress.util.ProgressIndicatorBase
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.Disposer
-import com.intellij.openapi.util.io.FileUtil
-import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.openapi.vfs.VirtualFileManager
-import kotlinx.coroutines.runBlocking
 import org.jetbrains.idea.maven.MavenCommandLineInspectionProjectConfigurator
 import org.jetbrains.idea.maven.project.MavenProjectsManager
 import org.jetbrains.plugins.gradle.GradleCommandLineProjectConfigurator
@@ -26,64 +24,58 @@ import org.slf4j.LoggerFactory
 import java.nio.file.Path
 import java.util.function.Predicate
 
-class ProjectConfiguratorException : Exception {
-    constructor(message: String) : super(message)
 
-    @Suppress("unused")
-    constructor(message: String, cause: Throwable) : super(message, cause)
+/**
+ * Responsible for configuring JVM-based projects in a headless environment.
+ */
+class JvmProjectConfigurator {
+    private val projectResolver = JvmProjectResolver()
+
+    suspend fun openProject(
+        projectPath: Path,
+        parentDisposable: Disposable,
+        fullResolveRequired: Boolean
+    ): Project {
+        val project = ProjectApplicationUtils.openProject(projectPath, parentDisposable)
+        if (fullResolveRequired) {
+            projectResolver.resolveProject(project)
+        }
+        return project
+    }
 }
 
-class ConversionListenerImpl : ConversionListener {
+private class JvmProjectResolver {
     private val logger = LoggerFactory.getLogger(javaClass)
 
-    override fun conversionNeeded() {
-        logger.info("Conversion is needed for project.")
+    fun resolveProject(project: Project) {
+        logger.info("Started to resolve project ${project.name}.")
+        val configurator = getProjectConfigurator(project)
+        val projectPath = project.basePath?.let { Path.of(it) }
+            ?: throw ProjectConfiguratorFailed("Undefined base path for project ${project.name}")
+        val context = ConfiguratorContextImpl(projectPath)
+
+        ProjectApplicationUtils.resolveProject(project, configurator, context)
     }
 
-    override fun successfullyConverted(backupDir: Path) {
-        logger.info("Project successfully converted.")
-    }
-
-    override fun error(message: String) {
-        throw ProjectConfiguratorException(message)
-    }
-
-    override fun cannotWriteToFiles(readonlyFiles: List<Path>) {
-        throw ProjectConfiguratorException("Can not write to files ${readonlyFiles.joinToString { it.fileName.toString() }}")
+    private fun getProjectConfigurator(project: Project): CommandLineInspectionProjectConfigurator {
+        return if (MavenProjectsManager.getInstance(project).isMavenizedProject) {
+            logger.info("Project ${project.name} considered to be maven")
+            MavenCommandLineInspectionProjectConfigurator()
+        } else {
+            logger.info("Project ${project.name} considered to be gradle")
+            GradleCommandLineProjectConfigurator()
+        }
     }
 }
 
-class ConfiguratorContextImpl(
-    private val projectRoot: Path,
-    private val indicator: ProgressIndicatorBase = ProgressIndicatorBase(),
-    private val filesFilter: Predicate<Path> = Predicate { true },
-    private val virtualFilesFilter: Predicate<VirtualFile> = Predicate { true },
-) : ConfiguratorContext {
-    private val logger = LoggerFactory.getLogger(javaClass)
-    override fun getProgressIndicator() = indicator
-    override fun getLogger() = object : CommandLineInspectionProgressReporter {
-        override fun reportError(message: String) {
-            logger.warn("ERROR: $message")
-        }
-
-        override fun reportMessage(minVerboseLevel: Int, message: String) {
-            logger.info("PROGRESS: $message")
-        }
-    }
-
-    override fun getProjectPath() = projectRoot
-    override fun getFilesFilter(): Predicate<Path> = filesFilter
-    override fun getVirtualFilesFilter(): Predicate<VirtualFile> = virtualFilesFilter
-}
-
-object ProjectApplicationUtils {
-
+private object ProjectApplicationUtils {
     private val logger = LoggerFactory.getLogger(javaClass)
 
     /**
-     * Rewritten from {@link com.intellij.codeInspection.InspectionApplicationBase}.
-     * Implementation which reuse InspectionApplicationBase:
+     * Rewritten from [com.intellij.codeInspection.InspectionApplicationBase].
+     * Implementation that reuses [com.intellij.codeInspection.InspectionApplicationBase]:
      *
+     * ```kotlin
      * val app = object : InspectionApplicationBase() {
      *     fun open(): Project? {
      *         return this.openProject(projectPath, parentDisposable)
@@ -91,21 +83,21 @@ object ProjectApplicationUtils {
      * }
      *
      * return app.open() ?: throw ProjectApplicationException("Can not open project")
+     * ```
      */
     suspend fun openProject(projectPath: Path, parentDisposable: Disposable, projectToClose: Project? = null): Project {
         ApplicationManager.getApplication().assertIsNonDispatchThread()
         ApplicationManagerEx.getApplicationEx().isSaveAllowed = false
 
-        LocalFileSystem.getInstance().refreshAndFindFileByPath(
-            FileUtil.toSystemIndependentName(projectPath.toString()),
-        ) ?: throw ProjectConfiguratorException("Project directory not found.")
+        projectPath.refreshAndFindVirtualFile()
+            ?: throw ProjectConfiguratorFailed("Project directory not found.")
 
         convertProject(projectPath)
 
         configureProjectEnvironment(projectPath)
 
         val project = openOrImport(projectPath, projectToClose, forceOpenInNewFrame = true)
-            ?: throw ProjectConfiguratorException("Can not open or import project from $projectPath.")
+            ?: throw ProjectConfiguratorFailed("Can not open or import project from $projectPath.")
         Disposer.register(parentDisposable) { closeProject(project) }
 
         waitAllStartupActivitiesPassed(project)
@@ -125,10 +117,10 @@ object ProjectApplicationUtils {
 
     private suspend fun convertProject(projectPath: Path) {
         val conversionService = ConversionService.getInstance()
-            ?: throw ProjectConfiguratorException("Can not convert project $projectPath")
+            ?: throw ProjectConfiguratorFailed("Can not convert project $projectPath")
         val conversionResult = conversionService.convertSilently(projectPath, ConversionListenerImpl())
         if (conversionResult.openingIsCanceled()) {
-            throw ProjectConfiguratorException("Project opening is canceled $projectPath")
+            throw ProjectConfiguratorFailed("Project opening is canceled $projectPath")
         }
     }
 
@@ -179,40 +171,45 @@ object ProjectApplicationUtils {
     }
 }
 
-class JvmProjectResolver {
+private class ConversionListenerImpl : ConversionListener {
     private val logger = LoggerFactory.getLogger(javaClass)
 
-    fun resolveProject(project: Project) {
-        logger.info("Started to resolve project ${project.name}.")
-        val configurator = getProjectConfigurator(project)
-        val projectPath = project.basePath?.let { Path.of(it) }
-            ?: throw ProjectConfiguratorException("Undefined base path for project ${project.name}")
-        val context = ConfiguratorContextImpl(projectPath)
-
-        ProjectApplicationUtils.resolveProject(project, configurator, context)
+    override fun conversionNeeded() {
+        logger.info("Conversion is needed for project.")
     }
 
-    private fun getProjectConfigurator(project: Project): CommandLineInspectionProjectConfigurator {
-        return if (MavenProjectsManager.getInstance(project).isMavenizedProject) {
-            logger.info("Project ${project.name} considered to be maven")
-            MavenCommandLineInspectionProjectConfigurator()
-        } else {
-            logger.info("Project ${project.name} considered to be gradle")
-            GradleCommandLineProjectConfigurator()
-        }
+    override fun successfullyConverted(backupDir: Path) {
+        logger.info("Project successfully converted.")
+    }
+
+    override fun error(message: String) {
+        throw ProjectConfiguratorFailed(message)
+    }
+
+    override fun cannotWriteToFiles(readonlyFiles: List<Path>) {
+        throw ProjectConfiguratorFailed("Can not write to files ${readonlyFiles.joinToString { it.fileName.toString() }}")
     }
 }
 
-class JvmProjectConfigurator {
-    private val projectResolver = JvmProjectResolver()
-
-    fun openProject(projectPath: Path, fullResolve: Boolean, parentDisposable: Disposable): Project = runBlocking {
-        val project = ProjectApplicationUtils.openProject(projectPath, parentDisposable)
-
-        if (fullResolve) {
-            projectResolver.resolveProject(project)
+private class ConfiguratorContextImpl(
+    private val projectRoot: Path,
+    private val indicator: ProgressIndicatorBase = ProgressIndicatorBase(),
+    private val filesFilter: Predicate<Path> = Predicate { true },
+    private val virtualFilesFilter: Predicate<VirtualFile> = Predicate { true },
+) : ConfiguratorContext {
+    private val logger = LoggerFactory.getLogger(javaClass)
+    override fun getProgressIndicator() = indicator
+    override fun getLogger() = object : CommandLineInspectionProgressReporter {
+        override fun reportError(message: String) {
+            logger.warn("ERROR: $message")
         }
 
-        project
+        override fun reportMessage(minVerboseLevel: Int, message: String) {
+            logger.info("PROGRESS: $message")
+        }
     }
+
+    override fun getProjectPath() = projectRoot
+    override fun getFilesFilter(): Predicate<Path> = filesFilter
+    override fun getVirtualFilesFilter(): Predicate<VirtualFile> = virtualFilesFilter
 }
