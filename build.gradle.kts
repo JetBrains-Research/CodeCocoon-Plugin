@@ -48,6 +48,7 @@ dependencies {
 
         // Adding submodules
         pluginComposedModule(implementation(project(":core")))
+        pluginComposedModule(implementation(project(":java")))
     }
 
     testImplementation(libs.junit)
