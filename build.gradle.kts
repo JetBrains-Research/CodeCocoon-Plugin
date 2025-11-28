@@ -31,9 +31,6 @@ repositories {
 
 // Dependencies are managed with Gradle version catalog - read more: https://docs.gradle.org/current/userguide/platforms.html#sub:version-catalog
 dependencies {
-    testImplementation(libs.junit)
-    testImplementation(libs.opentest4j)
-
     // IntelliJ Platform Gradle Plugin Dependencies Extension - read more: https://plugins.jetbrains.com/docs/intellij/tools-intellij-platform-gradle-plugin-dependencies-extension.html
     intellijPlatform {
         create(providers.gradleProperty("platformType"), providers.gradleProperty("platformVersion"))
@@ -48,7 +45,13 @@ dependencies {
         bundledModules(providers.gradleProperty("platformBundledModules").map { it.split(',') })
 
         testFramework(TestFrameworkType.Platform)
+
+        // Adding submodules
+        pluginComposedModule(implementation(project(":core")))
     }
+
+    testImplementation(libs.junit)
+    testImplementation(libs.opentest4j)
 }
 
 // Configure IntelliJ Platform Gradle Plugin - read more: https://plugins.jetbrains.com/docs/intellij/tools-intellij-platform-gradle-plugin-extension.html
@@ -152,6 +155,27 @@ intellijPlatformTesting {
 
             plugins {
                 robotServerPlugin()
+            }
+        }
+
+        register("headless") {
+            task {
+                val root = providers.gradleProperty("root").orNull
+
+                // Program (application) arguments of the IDE
+                args(listOfNotNull(
+                    "codecocoon",
+                    root,
+                ))
+
+                // JVM arguments of the IDE process
+                jvmArgs(
+                    "-Xmx16G",
+                    "-Djava.awt.headless=true",
+                    "--add-exports", "java.base/jdk.internal.vm=ALL-UNNAMED",
+                    "-Didea.system.path",
+                    "-Dproject.open.type=Gradle",
+                )
             }
         }
     }

@@ -5,11 +5,13 @@
     <vendor>pderakhshanfar</vendor>
 
     <depends>com.intellij.modules.platform</depends>
+    <depends>org.jetbrains.idea.maven</depends>
+    <depends>org.jetbrains.plugins.gradle</depends>
 
     <resource-bundle>messages.MyBundle</resource-bundle>
 
     <extensions defaultExtensionNs="com.intellij">
-        <toolWindow factoryClass="com.github.pderakhshanfar.codecocoonplugin.toolWindow.MyToolWindowFactory" id="MyToolWindow"/>
-        <postStartupActivity implementation="com.github.pderakhshanfar.codecocoonplugin.startup.MyProjectActivity" />
+        <appStarter implementation="com.github.pderakhshanfar.codecocoonplugin.appstarter.HeadlessModeStarter"
+        id="codecocoon"/>
     </extensions>
 </idea-plugin>
