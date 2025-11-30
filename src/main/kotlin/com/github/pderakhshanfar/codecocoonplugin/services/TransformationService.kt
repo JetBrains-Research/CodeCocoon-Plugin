@@ -1,10 +1,12 @@
 package com.github.pderakhshanfar.codecocoonplugin.services
 
+import com.github.pderakhshanfar.codecocoonplugin.config.CodeCocoonConfig
 import com.intellij.openapi.application.smartReadAction
 import com.intellij.openapi.components.Service
 import com.intellij.openapi.diagnostic.thisLogger
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.project.guessProjectDir
+import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.openapi.vfs.VfsUtilCore
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.openapi.vfs.VirtualFileVisitor
@@ -27,18 +29,18 @@ class TransformationService {
      * Executes the transformation pipeline for a given project.
      *
      * @param project The opened project to transform
-     * @param projectPath The path to the project's root directory (usually user-provided)
+     * @param config The loaded CodeCocoon configuration controlling the run
      * @throws Exception if any step fails
      */
-    suspend fun executeTransformations(project: Project, projectPath: String) {
-        logger.info("[TransformationService] Starting transformation pipeline for project: ${project.name}")
-        println("[TransformationService] Starting transformation pipeline for project: ${project.name}")
+    suspend fun executeTransformations(project: Project, config: CodeCocoonConfig) {
 
-        // Step 1: List all project files
-        val files = listProjectFiles(project)
+        // Step 1: List project files according to config
+        val files = listProjectFiles(project, config.projectRoot, includeOnly = config.files)
 
         // Step 2: Print files to the console
         printFiles(files)
+
+        // TODO: Step 3: Apply transformations
 
         logger.info("[TransformationService] Transformation pipeline completed successfully")
         println("[TransformationService] Transformation pipeline completed successfully")
@@ -47,25 +49,35 @@ class TransformationService {
     /**
      * Lists all files in the project, returning their paths relative to project root.
      * Uses [smartReadAction] to safely access virtual file system.
+     * If [includeOnly] is non-empty, only include those exact relative paths.
      */
-    private suspend fun listProjectFiles(project: Project): List<String> {
+    private suspend fun listProjectFiles(project: Project, rootPath: String?, includeOnly: List<String>): List<String> {
         logger.info("[TransformationService] Discovering project files...")
-        println("[TransformationService] Discovering project files...")
+        // It is good practice to log which path is being used
+        if (rootPath != null) logger.info("[TransformationService] Using provided root path: $rootPath")
 
         val files: List<String> = smartReadAction(project) {
-            // TODO: user must provide the project base path; `guessProjectDir` should serve as a fallback
-            val projectRoot = project.guessProjectDir()
-                ?: throw IllegalStateException("Project base directory is null")
+            val projectRoot: VirtualFile = rootPath?.let { path ->
+                LocalFileSystem.getInstance().findFileByPath(path)
+            } ?: project.guessProjectDir()
+            ?: throw IllegalStateException("Project base directory is null")
+
+            val includeSet = includeOnly.toSet()
 
             buildList {
                 // Visit all files recursively
                 VfsUtilCore.visitChildrenRecursively(projectRoot, object : VirtualFileVisitor<Unit>() {
                     override fun visitFile(file: VirtualFile): Boolean {
                         if (!file.isDirectory) {
-                            // Get path relative to project root
+                            // Get path relative to the resolved project root
                             val relativePath = VfsUtilCore.getRelativePath(file, projectRoot)
                             if (relativePath != null && relativePath.startsWith("src")) {
-                                add(relativePath)
+                                if (includeSet.isEmpty()) {
+                                    add(relativePath)
+                                } else if (relativePath in includeSet
+                                    || relativePath.substringAfterLast('/') in includeSet) {
+                                    add(relativePath)
+                                }
                             }
                         }
                         return true
@@ -75,8 +87,6 @@ class TransformationService {
         }
 
         logger.info("[TransformationService] Found ${files.size} files in project")
-        println("[TransformationService] Found ${files.size} files in project")
-
         return files
     }
 

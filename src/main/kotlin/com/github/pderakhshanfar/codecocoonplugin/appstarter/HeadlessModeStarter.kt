@@ -1,5 +1,6 @@
 package com.github.pderakhshanfar.codecocoonplugin.appstarter
 
+import com.github.pderakhshanfar.codecocoonplugin.config.ConfigLoader
 import com.github.pderakhshanfar.codecocoonplugin.services.TransformationService
 import com.github.pderakhshanfar.codecocoonplugin.components.JvmProjectConfigurator
 import com.intellij.openapi.Disposable
@@ -27,14 +28,13 @@ class HeadlessModeStarter : ApplicationStarter {
     override fun main(args: List<String>) {
         val logger = thisLogger()
 
-        // Validate arguments
-        if (args.size < 2) {
-            logger.error("[CodeCocoon Starter] Missing project path argument")
-            System.err.println("Usage: codecocoon <project-path>")
+        val config = ConfigLoader.load()
+        val projectPath = config.projectRoot
+        if (projectPath.isNullOrBlank()) {
+            logger.error("[CodeCocoon Starter] Missing project path. Set 'projectRoot' in codecocoon.yml")
             exitProcess(1)
         }
 
-        val projectPath = args[1]
         logger.info("[CodeCocoon Starter] Starting with project path: $projectPath")
 
         // Clean .idea folder to ensure fresh indexing
@@ -50,7 +50,7 @@ class HeadlessModeStarter : ApplicationStarter {
                 // Execute a transformation pipeline using the service
                 runCatching {
                     val transformationService = service<TransformationService>()
-                    transformationService.executeTransformations(project, projectPath)
+                    transformationService.executeTransformations(project, config)
                 }.onFailure { err ->
                     logger.error("[CodeCocoon Starter] Transformation Service failed with exception", err)
                     err.printStackTrace(System.err)
