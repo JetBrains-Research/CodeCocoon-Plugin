@@ -2,7 +2,7 @@ package com.github.pderakhshanfar.codecocoonplugin.services
 
 import com.github.pderakhshanfar.codecocoonplugin.config.CodeCocoonConfig
 import com.github.pderakhshanfar.codecocoonplugin.transformation.Transformation
-import com.github.pderakhshanfar.codecocoonplugin.transformation.TransformationRegistry
+import com.github.pderakhshanfar.codecocoonplugin.components.transformations.TransformationRegistry
 import com.intellij.openapi.application.smartReadAction
 import com.intellij.openapi.components.Service
 import com.intellij.openapi.diagnostic.thisLogger

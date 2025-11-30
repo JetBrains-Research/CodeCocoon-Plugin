@@ -1,8 +1,10 @@
-package com.github.pderakhshanfar.codecocoonplugin.transformation
+package com.github.pderakhshanfar.codecocoonplugin.components.transformations
+
+import com.github.pderakhshanfar.codecocoonplugin.transformation.Transformation
 
 /**
  * TransformationRegistry owns the mapping from transformation IDs (from YAML) to
- * factories that create concrete [Transformation] instances.
+ * factories that create concrete [com.github.pderakhshanfar.codecocoonplugin.transformation.Transformation] instances.
  *
  * Built-in transformation registrations are performed here during object init,
  * so there is no separate BuiltInTransformations object anymore.
