@@ -1,6 +1,8 @@
 package com.github.pderakhshanfar.codecocoonplugin.services
 
 import com.github.pderakhshanfar.codecocoonplugin.config.CodeCocoonConfig
+import com.github.pderakhshanfar.codecocoonplugin.transformation.Transformation
+import com.github.pderakhshanfar.codecocoonplugin.transformation.TransformationRegistry
 import com.intellij.openapi.application.smartReadAction
 import com.intellij.openapi.components.Service
 import com.intellij.openapi.diagnostic.thisLogger
@@ -40,6 +42,7 @@ class TransformationService {
         // Step 2: Print files to the console
         printFiles(files)
 
+        val transformations = mapToTransformations(config)
         // TODO: Step 3: Apply transformations
 
         logger.info("[TransformationService] Transformation pipeline completed successfully")
@@ -75,7 +78,8 @@ class TransformationService {
                                 if (includeSet.isEmpty()) {
                                     add(relativePath)
                                 } else if (relativePath in includeSet
-                                    || relativePath.substringAfterLast('/') in includeSet) {
+                                    || relativePath.substringAfterLast('/') in includeSet
+                                ) {
                                     add(relativePath)
                                 }
                             }
@@ -97,6 +101,36 @@ class TransformationService {
         println("\n=== Project Files (${files.size} total) ===")
         files.forEach { println(it) }
         println("=== End of File List ===\n")
+    }
+
+
+    /**
+     * Resolves transformation ids from YAML to concrete Transformation instances via the registry.
+     * - Preserves the original order from the config.
+     * - Enforces uniqueness: throws on duplicate ids.
+     * - Throws on unknown ids and lists known ids to help configuration.
+     */
+    private fun mapToTransformations(config: CodeCocoonConfig): List<Transformation> {
+        if (config.transformations.isEmpty()) return emptyList()
+
+        val seen = LinkedHashSet<String>()
+        val result = mutableListOf<Transformation>()
+
+        for (t in config.transformations) {
+            val id = t.id
+            if (!seen.add(id)) {
+                throw IllegalArgumentException("Duplicate transformation id='$id' in codecocoon.yml. Ids must be unique.")
+            }
+            val instance = TransformationRegistry.create(id, t.config) ?: run {
+                val known = TransformationRegistry.knownIds().sorted().joinToString(", ")
+                throw IllegalArgumentException("Unknown transformation id='$id'. Known ids: [$known]")
+            }
+            result.add(instance)
+        }
+
+        val plan = result.joinToString(", ") { it.id }
+        logger.info("[TransformationService] Planned transformations: [$plan]")
+        return result
     }
 
     /*suspend fun applyTransformation(project: Project, strategy: TransformationStrategy) {
