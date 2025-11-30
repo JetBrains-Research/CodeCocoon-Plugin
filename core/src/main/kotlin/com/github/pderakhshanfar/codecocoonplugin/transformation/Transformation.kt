@@ -15,7 +15,7 @@ interface Transformation {
     val id: String
 
     /** Free-form configuration as provided from YAML for this instance. */
-    val config: Map<String, Any?>
+    val config: Map<String, Any?>?
 
     /**
      * Human-readable name for this transformation.
@@ -34,5 +34,10 @@ interface Transformation {
      * @return `true` if this transformation supports the file, `false` otherwise
      */
     fun accepts(context: FileContext): Boolean
+
+    /**
+     * Parses [config] into a concrete type. Depended on the transformation type, this may be a no-op.
+     */
+    fun parseConfig(): Nothing
 }
 
