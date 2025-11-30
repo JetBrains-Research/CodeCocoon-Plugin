@@ -1,19 +1,21 @@
 package com.github.pderakhshanfar.codecocoonplugin.transformation
 
 import com.github.pderakhshanfar.codecocoonplugin.common.FileContext
-import com.github.pderakhshanfar.codecocoonplugin.executor.TransformationExecutor
-
 
 /**
  * Represents a language-agnostic transformation that can be applied to files.
  * This is the base interface for all transformations.
  *
- * To execute a given transformation, use a [TransformationExecutor].
- *
- * @see TransformationExecutor
+ * Each transformation is identified by a unique short `id` (coming from YAML)
+ * and holds its own free-form `config` which the implementation may parse lazily
+ * when executing.
  */
 interface Transformation {
-    // TODO: add ID
+    /** Unique identifier of the transformation type (e.g., "addComment"). */
+    val id: String
+
+    /** Free-form configuration as provided from YAML for this instance. */
+    val config: Map<String, Any?>
 
     /**
      * Human-readable name for this transformation.
