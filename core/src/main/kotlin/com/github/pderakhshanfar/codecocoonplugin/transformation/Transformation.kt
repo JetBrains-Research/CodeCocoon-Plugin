@@ -38,6 +38,6 @@ interface Transformation {
     /**
      * Parses [config] into a concrete type. Depended on the transformation type, this may be a no-op.
      */
-    fun parseConfig(): Nothing
+    fun parseConfig(): Void
 }
 
