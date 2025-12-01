@@ -9,6 +9,8 @@ import com.intellij.openapi.components.service
 import com.intellij.openapi.diagnostic.thisLogger
 import com.intellij.openapi.project.ProjectManager
 import com.intellij.openapi.util.Disposer
+import com.intellij.openapi.vfs.LocalFileSystem
+import com.intellij.openapi.vfs.VfsUtil
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
@@ -95,6 +97,14 @@ class HeadlessModeStarter : ApplicationStarter {
             parentDisposable = disposable,
             fullResolveRequired = true,
         )
+
+        val basePath = project.basePath
+        if (basePath != null) {
+            val projectBaseDir = LocalFileSystem.getInstance().findFileByPath(basePath)
+            if (projectBaseDir != null) {
+                VfsUtil.markDirtyAndRefresh(false, true, true, projectBaseDir)
+            }
+        }
 
         thisLogger().info("[CodeCocoon Starter] Project opened successfully: ${project.name}")
         project
