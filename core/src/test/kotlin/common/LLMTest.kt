@@ -7,11 +7,13 @@ import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.Serializable
 import org.jetbrains.research.codecocoon.grazie.convertToJBAI
 import org.jetbrains.research.codecocoon.grazie.createGraziePromptExecutor
+import org.junit.jupiter.api.Disabled
 import kotlin.test.Test
 
 class LLMTest {
 
 
+    @Disabled("LLM-related test - requires GRAZIE_TOKEN as env variable")
     @Test
     fun `test simple request`() = runTest {
         val model = convertToJBAI(OpenAIModels.Chat.GPT5Mini)
