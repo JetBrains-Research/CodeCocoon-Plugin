@@ -15,20 +15,6 @@ import ai.koog.prompt.structure.StructuredResponse
 import ai.koog.prompt.text.text
 import com.intellij.openapi.diagnostic.thisLogger
 
-object CustomEventHandler {
-    fun create(): EventHandlerConfig.() -> Unit = {
-        onAgentExecutionFailed {
-            thisLogger().error("Agent run error: ${it.throwable}")
-        }
-
-        onAgentCompleted {
-            thisLogger().debug("Agent finished: ${it.agentId}")
-            thisLogger().debug("Result: ${it.result}")
-        }
-    }
-}
-
-
 class LLM(
     val model: LLModel,
     val fixingModel: LLModel = model,
@@ -36,6 +22,18 @@ class LLM(
 ) {
     val handler = CustomEventHandler.create()
 
+    /**
+     * Performs a structured request to a large language model and returns a typed response.
+     *
+     * This method uses a zero-shot structured strategy to generate and parse responses
+     * from a prompt-input interaction, allowing for structured outputs defined by the generic type `Output`.
+     *
+     * @param prompt The prompt containing messages and parameters for the language model.
+     * @param examples A list of example outputs used for providing context to the model.
+     * @param maxRetries The maximum number of retries for parsing a response. Defaults to 3.
+     * @param maxFixingAttempts The maximum number of attempts to fix a parsing issue. Defaults to 1.
+     * @return A structured response of type `Output`, or null if the request fails after the specified retries and fixing attempts.
+     */
     suspend inline fun <reified Output> structuredRequest(
         prompt: Prompt,
         examples: List<Output>,
@@ -63,40 +61,57 @@ class LLM(
         }
         return runner.run(prompt.messages.last().content).getOrNull()?.structure
     }
-}
 
-inline fun <reified Output> zeroShotStructuredStrategy(
-    maxRetries: Int,
-    maxFixingAttempts: Int,
-    examples: List<Output> = emptyList(),
-    fixingModel: LLModel,
-) = functionalStrategy<String, Result<StructuredResponse<Output>>>("zero_shot_structured_strategy") { input ->
+    /**
+     * NOT TO BE USED OUTSIDE THIS CLASS. it cannot be private because it is inline
+     */
+    inline fun <reified Output> zeroShotStructuredStrategy(
+        maxRetries: Int,
+        maxFixingAttempts: Int,
+        examples: List<Output> = emptyList(),
+        fixingModel: LLModel,
+    ) = functionalStrategy<String, Result<StructuredResponse<Output>>>("zero_shot_structured_strategy") { input ->
 
-    var result: Result<StructuredResponse<Output>>? = null
-    var newMessage: String = input
+        var result: Result<StructuredResponse<Output>>? = null
+        var newMessage: String = input
 
-    for (attemptCount in 1..maxRetries.coerceAtLeast(1)) {
-        result = requestLLMStructured(
-            message = newMessage,
-            examples = examples,
-            fixingParser = StructureFixingParser(
-                fixingModel = fixingModel,
-                retries = maxFixingAttempts + 1, // + 1 because of an internal koog issue
+        for (attemptCount in 1..maxRetries.coerceAtLeast(1)) {
+            result = requestLLMStructured(
+                message = newMessage,
+                examples = examples,
+                fixingParser = StructureFixingParser(
+                    fixingModel = fixingModel,
+                    retries = maxFixingAttempts + 1, // + 1 because of an internal koog issue
+                )
             )
-        )
 
-        if (result.isSuccess) {
-            break
-        } else {
-            val exception = result.exceptionOrNull()!!
-            thisLogger().warn("Failed to parse structure. Attempt $attemptCount/$maxRetries failed")
-            newMessage = text {
-                text("Your response is not parsable due to the following error: ")
-                text("${exception.message}. ")
-                text("Provide a parsable response")
+            if (result.isSuccess) {
+                break
+            } else {
+                val exception = result.exceptionOrNull()!!
+                thisLogger().warn("Failed to parse structure. Attempt $attemptCount/$maxRetries failed")
+                newMessage = text {
+                    text("Your response is not parsable due to the following error: ")
+                    text("${exception.message}. ")
+                    text("Provide a parsable response")
+                }
+            }
+        }
+
+        result!!
+    }
+
+    private object CustomEventHandler {
+        fun create(): EventHandlerConfig.() -> Unit = {
+            onAgentExecutionFailed {
+                thisLogger().error("Agent run error: ${it.throwable}")
+            }
+
+            onAgentCompleted {
+                thisLogger().debug("Agent finished: ${it.agentId}")
+                thisLogger().debug("Result: ${it.result}")
             }
         }
     }
-
-    result!!
 }
+
