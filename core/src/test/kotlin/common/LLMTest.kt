@@ -2,21 +2,16 @@ package common
 
 import ai.koog.prompt.dsl.prompt
 import ai.koog.prompt.executor.clients.openai.OpenAIModels
-import ai.koog.prompt.executor.model.PromptExecutor
-import ai.koog.prompt.llm.LLModel
 import com.github.pderakhshanfar.codecocoonplugin.common.LLM
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.Serializable
 import org.junit.jupiter.api.Disabled
-import kotlin.coroutines.suspendCoroutine
-import kotlin.coroutines.intrinsics.suspendCoroutineUninterceptedOrReturn
 import kotlin.test.Test
-import kotlin.test.fail
 
 class LLMTest {
 
 
-//    @Disabled("LLM-related test - requires GRAZIE_TOKEN as env variable")
+    @Disabled("LLM-related test - requires GRAZIE_TOKEN as env variable")
     @Test
     fun `test simple request`() = runTest {
         val llm = LLM.fromGrazie(OpenAIModels.Chat.GPT5Mini, System.getenv("GRAZIE_TOKEN"))
