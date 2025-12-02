@@ -21,33 +21,28 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 
 class LLMTest {
-
-
     @Serializable
     data class PizzaIngredients(val ingredients: List<String>)
 
-    @Disabled("LLM-related test - requires grazie to be available and GRAZIE_TOKEN as env variable")
+    private val pizzaPrompt = prompt("pizza-prompt") {
+        system {
+            +"You are an italian"
+            +"Return the ingredients of the requested pizza"
+        }
+        user {
+            +"What are the ingredients of a pizza calzone?"
+        }
+    }
+
+
+//    @Disabled("LLM-related test - requires grazie to be available and GRAZIE_TOKEN as env variable")
     @Test
     fun `test simple request`() = runTest {
         val llm = LLM.fromGrazie(OpenAIModels.Chat.GPT5Mini, System.getenv("GRAZIE_TOKEN"))
-        val prompt = prompt("pizza-prompt") {
-            system {
-                +"You are an italian"
-                +"Return the ingredients of the requested pizza"
-            }
-            user {
-                +"What are the ingredients of a pizza calzone?"
-            }
-        }
-
-        val pizzaMargheritaIngredientsExample =
-            PizzaIngredients(listOf("Dough", "Tomato sauce", "Mozzarella cheese"))
-
         val result = llm.structuredRequest<PizzaIngredients>(
-            prompt = prompt,
+            prompt = pizzaPrompt,
             examples = listOf(pizzaMargheritaIngredientsExample)
         )
-
         println(result)
     }
 
@@ -57,18 +52,14 @@ class LLMTest {
         val originalModel = OpenAIModels.Chat.GPT5Mini
         val fixingModel = OpenAIModels.Chat.GPT5Mini
         val llm = LLM(originalModel, fixingModel, executor)
-        val prompt = prompt("pizza-prompt") {
-            system { +"You are an italian" }
-            user { +"What are the ingredients of a pizza calzone?" }
-        }
 
-        val output = llm.structuredRequest<PizzaIngredients>(prompt, listOf(sampleTestStructure))
+        val output = llm.structuredRequest<PizzaIngredients>(pizzaPrompt)
         assertEquals(1, executor.originalAttemptsCount)
         assertEquals(0, executor.fixingAttemptsCount)
-        assertEquals(sampleTestStructure, output)
+        assertEquals(pizzaMargheritaIngredientsExample, output)
     }
 
-    class FakeExecutor(
+    private class FakeExecutor(
         private val originalUnsuccessfulAttempts: Int,
         private val fixingModelUnsuccessfulAttempts: Int,
     ) : PromptExecutor {
@@ -132,9 +123,12 @@ class LLMTest {
     }
 
     companion object {
-        private val sampleTestStructure = PizzaIngredients(listOf("Dough", "Tomato sauce", "Mozzarella cheese"))
-        private val parseableResponse = Json.encodeToString(PizzaIngredients.serializer(), sampleTestStructure)
+        val pizzaMargheritaIngredientsExample =
+            PizzaIngredients(listOf("Dough", "Tomato sauce", "Mozzarella cheese"))
+        private val parseableResponse = Json.encodeToString(
+            PizzaIngredients.serializer(),
+            pizzaMargheritaIngredientsExample
+        )
         private val nonParseableResponse = "Not a valid JSON"
     }
-
 }

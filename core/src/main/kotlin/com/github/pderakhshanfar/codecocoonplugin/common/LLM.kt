@@ -76,7 +76,7 @@ class LLM(
      */
     suspend inline fun <reified Output> structuredRequest(
         prompt: Prompt,
-        examples: List<Output>,
+        examples: List<Output> = emptyList(),
         maxRetries: Int = 3,
         maxFixingAttempts: Int = 1,
     ) : Output? {
