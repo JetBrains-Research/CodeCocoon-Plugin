@@ -7,6 +7,8 @@ plugins {
 val spaceUsername: String by project
 val spacePassword: String by project
 
+fun spaceCredentialsProvided() = spaceUsername.isNotEmpty() && spacePassword.isNotEmpty()
+
 group = providers.gradleProperty("pluginGroup").get()
 version = providers.gradleProperty("pluginVersion").get()
 
@@ -15,16 +17,17 @@ repositories {
     intellijPlatform {
         defaultRepositories()
     }
-    maven {
-        url = uri("https://packages.jetbrains.team/maven/p/testing-agents/grazie-llm-interaction")
-        credentials {
-            username = spaceUsername
-            password = spacePassword
+    if (spaceCredentialsProvided()) {
+        maven {
+            url = uri("https://packages.jetbrains.team/maven/p/testing-agents/grazie-llm-interaction")
+            credentials {
+                username = spaceUsername
+                password = spacePassword
+            }
         }
-    }
-
-    maven {
-        url = uri("https://packages.jetbrains.team/maven/p/grazi/grazie-platform-public")
+        maven {
+            url = uri("https://packages.jetbrains.team/maven/p/grazi/grazie-platform-public")
+        }
     }
 }
 
@@ -41,8 +44,10 @@ dependencies {
     }
     implementation("ai.koog:koog-agents:0.5.0")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3")
-    implementation("org.jetbrains.research:grazie-llm-interaction:1.0-SNAPSHOT")
-
+    implementation(kotlin("reflect"))
+    if (spaceCredentialsProvided()) {
+        implementation("org.jetbrains.research:grazie-llm-interaction:1.0-SNAPSHOT")
+    }
 
     testImplementation(kotlin("test"))
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.10.2")
