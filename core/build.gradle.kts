@@ -4,8 +4,8 @@ plugins {
     kotlin("plugin.serialization") version "2.1.20"
 }
 
-val spaceUsername: String by project
-val spacePassword: String by project
+val spaceUsername: String = findProperty("spaceUsername") as String? ?: ""
+val spacePassword: String = findProperty("spacePassword") as String? ?: ""
 
 fun spaceCredentialsProvided() = spaceUsername.isNotEmpty() && spacePassword.isNotEmpty()
 
