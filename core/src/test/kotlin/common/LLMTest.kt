@@ -19,6 +19,7 @@ import kotlinx.serialization.json.Json
 import org.junit.jupiter.api.Disabled
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNull
 
 class LLMTest {
     @Serializable
@@ -35,7 +36,7 @@ class LLMTest {
     }
 
 
-//    @Disabled("LLM-related test - requires grazie to be available and GRAZIE_TOKEN as env variable")
+    @Disabled("LLM-related test - requires grazie to be available and GRAZIE_TOKEN as env variable")
     @Test
     fun `test simple request`() = runTest {
         val llm = LLM.fromGrazie(OpenAIModels.Chat.GPT5Mini, System.getenv("GRAZIE_TOKEN"))
@@ -47,21 +48,56 @@ class LLMTest {
     }
 
     @Test
-    fun `test returns successfully if the first response is parseable`() = runTest {
-        val executor = FakeExecutor(originalUnsuccessfulAttempts = 0, fixingModelUnsuccessfulAttempts = 0)
-        val originalModel = OpenAIModels.Chat.GPT5Mini
-        val fixingModel = OpenAIModels.Chat.GPT5Mini
-        val llm = LLM(originalModel, fixingModel, executor)
-
+    fun `returns successfully if the first response is parseable`() = runTest {
+        val executor = FakeExecutor(originalUnsuccessfulAttempts = 0)
+        val llm = createTestLLM(executor)
         val output = llm.structuredRequest<PizzaIngredients>(pizzaPrompt)
         assertEquals(1, executor.originalAttemptsCount)
         assertEquals(0, executor.fixingAttemptsCount)
         assertEquals(pizzaMargheritaIngredientsExample, output)
     }
 
+    @Test
+    fun `returns null if reached max retries`() = runTest {
+        val executor = FakeExecutor(
+            originalUnsuccessfulAttempts = Integer.MAX_VALUE,
+            fixingUnsuccessfulAttempts = Integer.MAX_VALUE
+        )
+        val llm = createTestLLM(executor)
+        val output = llm.structuredRequest<PizzaIngredients>(pizzaPrompt, maxRetries = 3)
+        assertEquals(3, executor.originalAttemptsCount)
+        assertNull(output)
+    }
+
+    @Test
+    fun `retries with the original model if the fixing model fails`() = runTest {
+        val executor = FakeExecutor(originalUnsuccessfulAttempts = 1, fixingUnsuccessfulAttempts = Integer.MAX_VALUE)
+        val llm = createTestLLM(executor)
+        val output = llm.structuredRequest<PizzaIngredients>(pizzaPrompt)
+        assertEquals(2, executor.originalAttemptsCount)
+        assertEquals(pizzaMargheritaIngredientsExample, output)
+    }
+
+    @Test
+    fun `doesn't retry if the parsing error is fixed by fixing model`() = runTest {
+        val executor = FakeExecutor(originalUnsuccessfulAttempts = 1)
+        val llm = createTestLLM(executor)
+        val output = llm.structuredRequest<PizzaIngredients>(pizzaPrompt)
+        assertEquals(1, executor.originalAttemptsCount)
+        assertEquals(pizzaMargheritaIngredientsExample, output)
+    }
+
+    private fun createTestLLM(
+        executor: PromptExecutor,
+    ) : LLM {
+        val originalModel = OpenAIModels.Chat.GPT5Mini
+        val fixingModel = OpenAIModels.Chat.GPT4o
+        return  LLM(originalModel, fixingModel, executor)
+    }
+
     private class FakeExecutor(
         private val originalUnsuccessfulAttempts: Int,
-        private val fixingModelUnsuccessfulAttempts: Int,
+        private val fixingUnsuccessfulAttempts: Int = 0,
     ) : PromptExecutor {
         var originalAttemptsCount = 0
         var fixingAttemptsCount = 0
@@ -96,7 +132,7 @@ class LLMTest {
 
             fixingModel -> {
                 fixingAttemptsCount++
-                if (fixingAttemptsCount > fixingModelUnsuccessfulAttempts) {
+                if (fixingAttemptsCount > fixingUnsuccessfulAttempts) {
                     parseableResponse
                 } else {
                     nonParseableResponse
