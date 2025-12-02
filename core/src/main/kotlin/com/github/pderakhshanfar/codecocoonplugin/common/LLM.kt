@@ -14,12 +14,52 @@ import ai.koog.prompt.structure.StructureFixingParser
 import ai.koog.prompt.structure.StructuredResponse
 import ai.koog.prompt.text.text
 import com.intellij.openapi.diagnostic.thisLogger
+import kotlin.coroutines.intrinsics.suspendCoroutineUninterceptedOrReturn
 
 class LLM(
     val model: LLModel,
     val fixingModel: LLModel = model,
     val executor: PromptExecutor,
 ) {
+    companion object {
+        suspend fun fromGrazie(model: LLModel, token: String) : LLM {
+            if (!grazieIsAvailable()) throw IllegalStateException("Grazie is not available")
+            return LLM(model = convertModel(model), executor = createExecutor(token))
+        }
+
+        private fun grazieIsAvailable(): Boolean {
+            try {
+                getMainKtGrazieClass()
+            } catch (_: ClassNotFoundException) {
+                return false
+            }
+            return true
+        }
+
+        private fun getMainKtGrazieClass(): Class<*> {
+            return Class.forName("org.jetbrains.research.codecocoon.grazie.MainKt")
+        }
+
+        private fun convertModel(model: LLModel) : LLModel {
+            val reflectClass = getMainKtGrazieClass()
+            val convertToJBAI = reflectClass.methods.find { it.name == "convertToJBAI" }!!
+            // We need to pass in the class when invoking a reflective method. In case the methods are static, we pass null.
+            return convertToJBAI(null, model) as LLModel
+        }
+
+        private suspend fun createExecutor(token: String) : PromptExecutor {
+            val reflectClass = getMainKtGrazieClass()
+            val createGraziePromptExecutor = reflectClass.methods.find { it.name == "createGraziePromptExecutor" }!!
+            // We need to pass in the continuation because it is a suspend function.
+            val executor: PromptExecutor = suspendCoroutineUninterceptedOrReturn { continuation ->
+                createGraziePromptExecutor(null, token, continuation)
+            }
+            return executor
+        }
+
+    }
+
+
     val handler = CustomEventHandler.create()
 
     /**
