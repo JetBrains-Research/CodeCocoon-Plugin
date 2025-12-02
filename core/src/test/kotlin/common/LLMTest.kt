@@ -11,7 +11,7 @@ import kotlin.test.Test
 class LLMTest {
 
 
-    @Disabled("LLM-related test - requires GRAZIE_TOKEN as env variable")
+    @Disabled("LLM-related test - requires grazie to be available and GRAZIE_TOKEN as env variable")
     @Test
     fun `test simple request`() = runTest {
         val llm = LLM.fromGrazie(OpenAIModels.Chat.GPT5Mini, System.getenv("GRAZIE_TOKEN"))
