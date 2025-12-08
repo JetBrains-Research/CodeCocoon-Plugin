@@ -50,6 +50,9 @@ dependencies {
         pluginComposedModule(implementation(project(":core")))
     }
 
+    // YAML parser for config loading
+    implementation("org.yaml:snakeyaml:2.2")
+
     testImplementation(libs.junit)
     testImplementation(libs.opentest4j)
 }
@@ -160,14 +163,13 @@ intellijPlatformTesting {
 
         register("headless") {
             task {
-                val root = providers.gradleProperty("root").orNull
-
+                // Zero-arg launcher: the application will read all settings from the repo-root codecocoon.yml
                 // Program (application) arguments of the IDE
-                args(listOfNotNull(
-                    "codecocoon",
-                    root,
-                ))
+                args(listOf("codecocoon"))
 
+                val manualUserConfigPath = project.findProperty("codecocoon.config") as? String
+                val configPath = manualUserConfigPath
+                    ?: layout.projectDirectory.file("codecocoon.yml").asFile.absolutePath
                 // JVM arguments of the IDE process
                 jvmArgs(
                     "-Xmx16G",
@@ -175,6 +177,7 @@ intellijPlatformTesting {
                     "--add-exports", "java.base/jdk.internal.vm=ALL-UNNAMED",
                     "-Didea.system.path",
                     "-Dproject.open.type=Gradle",
+                    "-Dcodecocoon.config=${configPath}",
                 )
             }
         }

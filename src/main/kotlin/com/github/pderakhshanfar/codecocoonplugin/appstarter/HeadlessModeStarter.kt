@@ -1,7 +1,11 @@
 package com.github.pderakhshanfar.codecocoonplugin.appstarter
 
+import com.github.pderakhshanfar.codecocoonplugin.config.ConfigLoader
 import com.github.pderakhshanfar.codecocoonplugin.services.TransformationService
 import com.github.pderakhshanfar.codecocoonplugin.components.JvmProjectConfigurator
+import com.github.pderakhshanfar.codecocoonplugin.components.transformations.TransformationRegistry
+import com.github.pderakhshanfar.codecocoonplugin.config.CodeCocoonConfig
+import com.github.pderakhshanfar.codecocoonplugin.transformation.Transformation
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.application.ApplicationStarter
 import com.intellij.openapi.application.EDT
@@ -27,14 +31,14 @@ class HeadlessModeStarter : ApplicationStarter {
     override fun main(args: List<String>) {
         val logger = thisLogger()
 
-        // Validate arguments
-        if (args.size < 2) {
-            logger.error("[CodeCocoon Starter] Missing project path argument")
-            System.err.println("Usage: codecocoon <project-path>")
+        val config = ConfigLoader.load()
+        val projectPath = config.projectRoot
+        if (projectPath.isNullOrBlank()) {
+            logger.error("[CodeCocoon Starter] Missing project path. Set 'projectRoot' in codecocoon.yml")
             exitProcess(1)
         }
 
-        val projectPath = args[1]
+        println("[CodeCocoon Starter] Starting with project path: $projectPath")
         logger.info("[CodeCocoon Starter] Starting with project path: $projectPath")
 
         // Clean .idea folder to ensure fresh indexing
@@ -47,10 +51,15 @@ class HeadlessModeStarter : ApplicationStarter {
                 // Open and resolve the project
                 val project = openProject(projectPath, disposable)
 
+                val transformations = mapToTransformations(config)
+
+                val plan = transformations.joinToString(", ") { it.id }
+                logger.info("[TransformationService] Planned transformations: [$plan]")
+
                 // Execute a transformation pipeline using the service
                 runCatching {
                     val transformationService = service<TransformationService>()
-                    transformationService.executeTransformations(project, projectPath)
+                    transformationService.executeTransformations(project, config, transformations)
                 }.onFailure { err ->
                     logger.error("[CodeCocoon Starter] Transformation Service failed with exception", err)
                     err.printStackTrace(System.err)
@@ -102,4 +111,33 @@ class HeadlessModeStarter : ApplicationStarter {
         thisLogger().error("[CodeCocoon Starter] Failed to open project", e)
         throw e
     }
+
+    /**
+     * Resolves transformation ids from YAML to concrete Transformation instances via the registry.
+     * - Preserves the original order from the config.
+     * - Enforces uniqueness: throws on duplicate ids.
+     * - Throws on unknown ids and lists known ids to help configuration.
+     */
+    private fun mapToTransformations(config: CodeCocoonConfig): List<Transformation> {
+        if (config.transformations.isEmpty()) return emptyList()
+
+        val seen = LinkedHashSet<String>()
+        val result = mutableListOf<Transformation>()
+
+        for (t in config.transformations) {
+            val id = t.id
+            if (!seen.add(id)) {
+                throw IllegalArgumentException("Duplicate transformation id='$id' in codecocoon.yml. Ids must be unique.")
+            }
+            val instance = TransformationRegistry.create(id, t.config) ?: run {
+                val known = TransformationRegistry.knownIds().sorted().joinToString(", ")
+                throw IllegalArgumentException("Unknown transformation id='$id'. Known ids: [$known]")
+            }
+            instance.parseConfig()
+            result.add(instance)
+        }
+
+        return result
+    }
+
 }

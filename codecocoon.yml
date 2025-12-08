@@ -1,0 +1,15 @@
+# Absolute or project-local path to the root of the project you want to transform
+projectRoot: "/absolute/path/to/your/project"
+
+# Optional: limit transformations to these files (relative to the root). Leave empty to target the entire project
+files: []
+
+# The transformation pipeline. Order matters. Each transformation has:
+#   - id: unique identifier
+#   - config: arbitrary nested settings; only the selected transformation should interpret it
+transformations:
+  - id: "dummyTransformation1"
+    config:
+      prefix: "Tmp_"
+      includeScopes:
+        - "src/main"
