@@ -34,7 +34,11 @@ class TransformationService {
      * @param config The loaded CodeCocoon configuration controlling the run
      * @throws Exception if any step fails
      */
-    suspend fun executeTransformations(project: Project, config: CodeCocoonConfig) {
+    suspend fun executeTransformations(
+        project: Project,
+        config: CodeCocoonConfig,
+        transformations: List<Transformation>
+    ) {
 
         // Step 1: List project files according to config
         val files = listProjectFiles(project, config.projectRoot, includeOnly = config.files)
@@ -42,7 +46,6 @@ class TransformationService {
         // Step 2: Print files to the console
         printFiles(files)
 
-        val transformations = mapToTransformations(config)
         // TODO: Step 3: Apply transformations
 
         logger.info("[TransformationService] Transformation pipeline completed successfully")
@@ -101,37 +104,6 @@ class TransformationService {
         println("\n=== Project Files (${files.size} total) ===")
         files.forEach { println(it) }
         println("=== End of File List ===\n")
-    }
-
-
-    /**
-     * Resolves transformation ids from YAML to concrete Transformation instances via the registry.
-     * - Preserves the original order from the config.
-     * - Enforces uniqueness: throws on duplicate ids.
-     * - Throws on unknown ids and lists known ids to help configuration.
-     */
-    private fun mapToTransformations(config: CodeCocoonConfig): List<Transformation> {
-        if (config.transformations.isEmpty()) return emptyList()
-
-        val seen = LinkedHashSet<String>()
-        val result = mutableListOf<Transformation>()
-
-        for (t in config.transformations) {
-            val id = t.id
-            if (!seen.add(id)) {
-                throw IllegalArgumentException("Duplicate transformation id='$id' in codecocoon.yml. Ids must be unique.")
-            }
-            val instance = TransformationRegistry.create(id, t.config) ?: run {
-                val known = TransformationRegistry.knownIds().sorted().joinToString(", ")
-                throw IllegalArgumentException("Unknown transformation id='$id'. Known ids: [$known]")
-            }
-            instance.parseConfig()
-            result.add(instance)
-        }
-
-        val plan = result.joinToString(", ") { it.id }
-        logger.info("[TransformationService] Planned transformations: [$plan]")
-        return result
     }
 
     /*suspend fun applyTransformation(project: Project, strategy: TransformationStrategy) {
