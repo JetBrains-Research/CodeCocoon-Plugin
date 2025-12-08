@@ -32,7 +32,7 @@ object ConfigLoader {
             val yaml = Yaml()
 
             @Suppress("UNCHECKED_CAST")
-            val root = yaml.load<Any?>(input) as? Map<String, Any?> ?: emptyMap()
+            val root = yaml.load<Any?>(input) as Map<String, Any>
 
             val projectRoot = (root["projectRoot"])?.toString()
             val files = (root["files"] as? List<*>)?.mapNotNull { it?.toString() } ?: emptyList()
@@ -43,7 +43,7 @@ object ConfigLoader {
                 val id = map["id"]?.toString() ?: return@mapNotNull null
 
                 @Suppress("UNCHECKED_CAST")
-                val cfg = (map["config"] as? Map<String, Any?>) ?: emptyMap()
+                val cfg = (map["config"] as Map<String, Any>)
                 TransformationConfig(id = id, config = cfg)
             }
 

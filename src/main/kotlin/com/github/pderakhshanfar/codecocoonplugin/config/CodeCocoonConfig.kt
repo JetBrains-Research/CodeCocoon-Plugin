@@ -17,5 +17,5 @@ package com.github.pderakhshanfar.codecocoonplugin.config
   */
  data class TransformationConfig(
      val id: String,
-     val config: Map<String, Any?> = emptyMap(),
+     val config: Map<String, Any> = emptyMap(),
  )
