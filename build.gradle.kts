@@ -167,8 +167,10 @@ intellijPlatformTesting {
                 // Program (application) arguments of the IDE
                 args(listOf("codecocoon"))
 
+                val manualUserConfigPath = project.findProperty("codecocoon.config") as? String
+                val configPath = manualUserConfigPath
+                    ?: layout.projectDirectory.file("codecocoon.yml").asFile.absolutePath
                 // JVM arguments of the IDE process
-                val configPath = layout.projectDirectory.file("codecocoon.yml").asFile.absolutePath
                 jvmArgs(
                     "-Xmx16G",
                     "-Djava.awt.headless=true",

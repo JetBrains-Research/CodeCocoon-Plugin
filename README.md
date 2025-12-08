@@ -4,6 +4,35 @@
 [![Version](https://img.shields.io/jetbrains/plugin/v/MARKETPLACE_ID.svg)](https://plugins.jetbrains.com/plugin/MARKETPLACE_ID)
 [![Downloads](https://img.shields.io/jetbrains/plugin/d/MARKETPLACE_ID.svg)](https://plugins.jetbrains.com/plugin/MARKETPLACE_ID)
 
+
+## Configuration
+
+### The config file (codecocoon.yml)
+The plugin requires a YAML configuration file. By default, it looks for `codecocoon.yml` in the project root.
+Alternatively, you can overwrite the path in `gradle.properties`:
+```properties
+codecocoon.config=/path/to/config.yml
+```
+
+Example structure for the config file:
+```yaml
+# Absolute or project-local path to the root of the project you want to transform
+projectRoot: "/absolute/path/to/your/project"
+
+# Optional: limit transformations to these files (relative to the root). Leave empty to target the entire project
+files: ['path/to/file1.kt', 'path/to/file2.kt']
+
+# The transformation pipeline. Order matters. Each transformation has:
+#   - id: unique identifier
+#   - config: arbitrary nested settings; only the selected transformation should interpret it
+transformations:
+  - id: "TransformationA"
+    config:
+      prefix: "Tmp_"
+      includeScopes:
+        - "src/main"
+```
+
 ## Template ToDo list
 - [x] Create a new [IntelliJ Platform Plugin Template][template] project.
 - [ ] Get familiar with the [template documentation][template].
