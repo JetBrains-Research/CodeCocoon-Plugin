@@ -51,7 +51,7 @@ dependencies {
     }
 
     // YAML parser for config loading
-    implementation("org.yaml:snakeyaml:2.2")
+    implementation("org.yaml:snakeyaml:2.5")
 
     testImplementation(libs.junit)
     testImplementation(libs.opentest4j)
