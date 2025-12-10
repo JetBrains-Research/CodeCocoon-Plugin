@@ -1,0 +1,170 @@
+package common
+
+import ai.koog.agents.core.tools.ToolDescriptor
+import ai.koog.prompt.dsl.ModerationResult
+import ai.koog.prompt.dsl.Prompt
+import ai.koog.prompt.dsl.prompt
+import ai.koog.prompt.executor.clients.openai.OpenAIModels
+import ai.koog.prompt.executor.model.PromptExecutor
+import ai.koog.prompt.llm.LLModel
+import ai.koog.prompt.message.Message
+import ai.koog.prompt.message.ResponseMetaInfo
+import ai.koog.prompt.streaming.StreamFrame
+import com.github.pderakhshanfar.codecocoonplugin.common.LLM
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.test.runTest
+import kotlinx.datetime.Clock
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.Json
+import org.junit.jupiter.api.Disabled
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertNull
+
+class LLMTest {
+    @Serializable
+    data class PizzaIngredients(val ingredients: List<String>)
+
+    private val pizzaPrompt = prompt("pizza-prompt") {
+        system {
+            +"You are an italian"
+            +"Return the ingredients of the requested pizza"
+        }
+        user {
+            +"What are the ingredients of a pizza calzone?"
+        }
+    }
+
+
+    @Disabled("LLM-related test - requires grazie to be available and GRAZIE_TOKEN as env variable")
+    @Test
+    fun `test simple request`() = runTest {
+        val llm = LLM.fromGrazie(OpenAIModels.Chat.GPT5Mini, System.getenv("GRAZIE_TOKEN"))
+        val result = llm.structuredRequest<PizzaIngredients>(
+            prompt = pizzaPrompt,
+            examples = listOf(pizzaMargheritaIngredientsExample)
+        )
+        println(result)
+    }
+
+    @Test
+    fun `returns successfully if the first response is parseable`() = runTest {
+        val executor = FakeExecutor(originalUnsuccessfulAttempts = 0)
+        val llm = createTestLLM(executor)
+        val output = llm.structuredRequest<PizzaIngredients>(pizzaPrompt)
+        assertEquals(1, executor.originalAttemptsCount)
+        assertEquals(0, executor.fixingAttemptsCount)
+        assertEquals(pizzaMargheritaIngredientsExample, output)
+    }
+
+    @Test
+    fun `returns null if reached max retries`() = runTest {
+        val executor = FakeExecutor(
+            originalUnsuccessfulAttempts = Integer.MAX_VALUE,
+            fixingUnsuccessfulAttempts = Integer.MAX_VALUE
+        )
+        val llm = createTestLLM(executor)
+        val output = llm.structuredRequest<PizzaIngredients>(pizzaPrompt, maxRetries = 3)
+        assertEquals(3, executor.originalAttemptsCount)
+        assertNull(output)
+    }
+
+    @Test
+    fun `retries with the original model if the fixing model fails`() = runTest {
+        val executor = FakeExecutor(originalUnsuccessfulAttempts = 1, fixingUnsuccessfulAttempts = Integer.MAX_VALUE)
+        val llm = createTestLLM(executor)
+        val output = llm.structuredRequest<PizzaIngredients>(pizzaPrompt)
+        assertEquals(2, executor.originalAttemptsCount)
+        assertEquals(pizzaMargheritaIngredientsExample, output)
+    }
+
+    @Test
+    fun `doesn't retry if the parsing error is fixed by fixing model`() = runTest {
+        val executor = FakeExecutor(originalUnsuccessfulAttempts = 1)
+        val llm = createTestLLM(executor)
+        val output = llm.structuredRequest<PizzaIngredients>(pizzaPrompt)
+        assertEquals(1, executor.originalAttemptsCount)
+        assertEquals(pizzaMargheritaIngredientsExample, output)
+    }
+
+    private fun createTestLLM(
+        executor: PromptExecutor,
+    ) : LLM {
+        val originalModel = OpenAIModels.Chat.GPT5Mini
+        val fixingModel = OpenAIModels.Chat.GPT4o
+        return  LLM(originalModel, fixingModel, executor)
+    }
+
+    private class FakeExecutor(
+        private val originalUnsuccessfulAttempts: Int,
+        private val fixingUnsuccessfulAttempts: Int = 0,
+    ) : PromptExecutor {
+        var originalAttemptsCount = 0
+        var fixingAttemptsCount = 0
+        private lateinit var originalModel: LLModel
+        private lateinit var fixingModel: LLModel
+
+        override suspend fun execute(
+            prompt: Prompt,
+            model: LLModel,
+            tools: List<ToolDescriptor>
+        ): List<Message.Response> {
+            setModels(model)
+            val response = increaseAttemptsCountAndRespond(model)
+            val metaInfo = ResponseMetaInfo.create(Clock.System)
+            return listOf(Message.Assistant(response, metaInfo))
+        }
+
+        private fun setModels(model: LLModel) {
+            if (!::originalModel.isInitialized) originalModel = model
+            else if (::originalModel.isInitialized && model != originalModel) fixingModel = model
+        }
+
+        private fun increaseAttemptsCountAndRespond(model: LLModel): String = when (model) {
+            originalModel -> {
+                originalAttemptsCount++
+                if (originalAttemptsCount > originalUnsuccessfulAttempts) {
+                    parseableResponse
+                } else {
+                    nonParseableResponse
+                }
+            }
+
+            fixingModel -> {
+                fixingAttemptsCount++
+                if (fixingAttemptsCount > fixingUnsuccessfulAttempts) {
+                    parseableResponse
+                } else {
+                    nonParseableResponse
+                }
+            }
+
+            else -> throw IllegalArgumentException("Unknown model")
+        }
+
+        override fun executeStreaming(
+            prompt: Prompt,
+            model: LLModel,
+            tools: List<ToolDescriptor>
+        ): Flow<StreamFrame> {
+            throw UnsupportedOperationException()
+        }
+
+        override suspend fun moderate(
+            prompt: Prompt,
+            model: LLModel
+        ): ModerationResult {
+            throw UnsupportedOperationException()
+        }
+    }
+
+    companion object {
+        val pizzaMargheritaIngredientsExample =
+            PizzaIngredients(listOf("Dough", "Tomato sauce", "Mozzarella cheese"))
+        private val parseableResponse = Json.encodeToString(
+            PizzaIngredients.serializer(),
+            pizzaMargheritaIngredientsExample
+        )
+        private val nonParseableResponse = "Not a valid JSON"
+    }
+}

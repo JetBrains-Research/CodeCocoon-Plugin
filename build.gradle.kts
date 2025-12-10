@@ -15,6 +15,11 @@ plugins {
 group = providers.gradleProperty("pluginGroup").get()
 version = providers.gradleProperty("pluginVersion").get()
 
+val spaceUsername: String = findProperty("spaceUsername") as String? ?: ""
+val spacePassword: String = findProperty("spacePassword") as String? ?: ""
+
+fun spaceCredentialsProvided() = spaceUsername.isNotEmpty() && spacePassword.isNotEmpty()
+
 // Set the JVM language level used to build the project.
 kotlin {
     jvmToolchain(21)
@@ -27,6 +32,19 @@ repositories {
     // IntelliJ Platform Gradle Plugin Repositories Extension - read more: https://plugins.jetbrains.com/docs/intellij/tools-intellij-platform-gradle-plugin-repositories-extension.html
     intellijPlatform {
         defaultRepositories()
+    }
+
+    if (spaceCredentialsProvided()) {
+        maven {
+            url = uri("https://packages.jetbrains.team/maven/p/testing-agents/grazie-llm-interaction")
+            credentials {
+                username = spaceUsername
+                password = spacePassword
+            }
+        }
+        maven {
+            url = uri("https://packages.jetbrains.team/maven/p/grazi/grazie-platform-public")
+        }
     }
 }
 
