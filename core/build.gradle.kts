@@ -42,7 +42,7 @@ dependencies {
         println("[:core Module]: creating platform=$platformType with version=$platformVersion")
         create(platformType, platformVersion)
     }
-    implementation("ai.koog:koog-agents:0.5.0") {
+    implementation("ai.koog:koog-agents:0.5.4-develop-20251211-0203") {
         exclude(group = "org.jetbrains.kotlinx", module = "kotlinx-coroutines-core")
     }
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3")
