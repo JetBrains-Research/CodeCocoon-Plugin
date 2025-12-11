@@ -45,7 +45,7 @@ dependencies {
     implementation("ai.koog:koog-agents:0.5.0") {
         exclude(group = "org.jetbrains.kotlinx", module = "kotlinx-coroutines-core")
     }
-    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3")
+    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.9.0")
     implementation(kotlin("reflect"))
     if (spaceCredentialsProvided()) {
         implementation("org.jetbrains.research:grazie-llm-interaction:1.0-SNAPSHOT") {
