@@ -1,7 +1,7 @@
 plugins {
     alias(libs.plugins.kotlin)
     id("org.jetbrains.intellij.platform.module")
-    kotlin("plugin.serialization") version "2.1.20"
+    kotlin("plugin.serialization") version "2.2.21"
 }
 
 val spaceUsername: String? = findProperty("spaceUsername") as String?
