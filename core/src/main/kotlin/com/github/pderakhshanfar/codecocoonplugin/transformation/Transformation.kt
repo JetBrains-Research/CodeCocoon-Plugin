@@ -14,9 +14,6 @@ interface Transformation {
     /** Unique identifier of the transformation type (e.g., "addComment"). */
     val id: String
 
-    /** Free-form configuration as provided from YAML for this instance. */
-    val config: Map<String, Any?>?
-
     /**
      * Human-readable name for this transformation.
      */
@@ -27,6 +24,9 @@ interface Transformation {
      */
     val description: String
 
+    /** Free-form configuration as provided from YAML for this instance. */
+    val config: Map<String, Any>
+
     /**
      * Determines if this transformation can be applied to the given file context.
      *
@@ -34,10 +34,5 @@ interface Transformation {
      * @return `true` if this transformation supports the file, `false` otherwise
      */
     fun accepts(context: FileContext): Boolean
-
-    /**
-     * Parses [config] into a concrete type. Depended on the transformation type, this may be a no-op.
-     */
-    fun parseConfig()
 }
 

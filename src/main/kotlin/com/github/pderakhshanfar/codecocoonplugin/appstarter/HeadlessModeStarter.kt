@@ -131,7 +131,7 @@ class HeadlessModeStarter : ApplicationStarter {
                 val known = TransformationRegistry.knownIds().sorted().joinToString(", ")
                 throw IllegalArgumentException("Unknown transformation id='$id'. Known ids: [$known]")
             }
-            instance.parseConfig()
+
             result.add(instance)
         }
 
