@@ -30,12 +30,12 @@ class AddCommentTransformation(
         Language.KOTLIN,
     )
 
-    private val message: String = run {
+    private val message: String = config.let {
         val param = "message"
-        if (param !in config || config[param] !is String) {
+        if (!(param in it && it[param] is String)) {
             throw IllegalArgumentException("Missing required config parameter '$param' of type string")
         }
-        config[param] as String
+        it[param] as String
     }
 
     override fun apply(
