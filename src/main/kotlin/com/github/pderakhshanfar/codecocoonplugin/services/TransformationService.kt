@@ -50,7 +50,7 @@ class TransformationService {
         // Step 2: Print files to the console
         printFiles(files)
         // Step 3: Apply transformations to the project files
-        applyTransformations(project, transformations, fileFilter)
+        applyTransformations(project, config, transformations, fileFilter)
 
         logger.info("[TransformationService] Transformation pipeline completed successfully")
     }
@@ -113,12 +113,13 @@ class TransformationService {
 
     private suspend fun applyTransformations(
         project: Project,
+        config: CodeCocoonConfig,
         transformations: List<Transformation>,
         fileFilter: (FileContext) -> Boolean = { true }
     ) {
         logger.info("[TransformationService] Applying ${transformations.size} transformations")
 
-        val files = listProjectFiles(project)
+        val files = listProjectFiles(project, config.projectRoot, includeOnly = config.files)
         val executor = IntelliJTransformationExecutor(project)
 
         var successCount = 0

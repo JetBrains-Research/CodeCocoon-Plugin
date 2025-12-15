@@ -30,7 +30,7 @@ dependencies {
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
 
     // Adding submodules
-    implementation(project(":core"))
+    // implementation(project(":core"))
 }
 
 tasks.test {
