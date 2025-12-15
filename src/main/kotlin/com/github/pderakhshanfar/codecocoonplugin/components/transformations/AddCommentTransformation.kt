@@ -1,13 +1,9 @@
-package com.github.pderakhshanfar.codecocoonplugin.components.transformation
+package com.github.pderakhshanfar.codecocoonplugin.components.transformations
 
 import com.github.pderakhshanfar.codecocoonplugin.common.Language
 import com.github.pderakhshanfar.codecocoonplugin.executor.TransformationResult
 import com.github.pderakhshanfar.codecocoonplugin.intellij.psi.document
 import com.github.pderakhshanfar.codecocoonplugin.transformation.TextBasedTransformation
-import com.intellij.openapi.application.ReadAndWriteScope
-import com.intellij.openapi.application.ReadResult
-import com.intellij.openapi.application.writeAction
-import com.intellij.openapi.command.WriteCommandAction
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.psi.PsiFile
 

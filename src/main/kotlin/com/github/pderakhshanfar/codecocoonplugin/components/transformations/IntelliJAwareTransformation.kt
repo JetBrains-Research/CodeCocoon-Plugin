@@ -1,4 +1,4 @@
-package com.github.pderakhshanfar.codecocoonplugin.components.transformation
+package com.github.pderakhshanfar.codecocoonplugin.components.transformations
 
 import com.github.pderakhshanfar.codecocoonplugin.executor.TransformationResult
 import com.github.pderakhshanfar.codecocoonplugin.transformation.Transformation

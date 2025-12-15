@@ -1,7 +1,7 @@
 package com.github.pderakhshanfar.codecocoonplugin.components.executor
 
 import com.github.pderakhshanfar.codecocoonplugin.common.FileContext
-import com.github.pderakhshanfar.codecocoonplugin.components.transformation.IntelliJAwareTransformation
+import com.github.pderakhshanfar.codecocoonplugin.components.transformations.IntelliJAwareTransformation
 import com.github.pderakhshanfar.codecocoonplugin.executor.TransformationExecutor
 import com.github.pderakhshanfar.codecocoonplugin.executor.TransformationResult
 import com.github.pderakhshanfar.codecocoonplugin.intellij.psi.psiFile

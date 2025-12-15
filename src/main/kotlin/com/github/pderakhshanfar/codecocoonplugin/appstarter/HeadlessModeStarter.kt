@@ -1,6 +1,6 @@
 package com.github.pderakhshanfar.codecocoonplugin.appstarter
 
-import com.github.pderakhshanfar.codecocoonplugin.components.transformation.AddCommentTransformation
+import com.github.pderakhshanfar.codecocoonplugin.components.transformations.AddCommentTransformation
 import com.github.pderakhshanfar.codecocoonplugin.components.transformations.TransformationRegistry
 import com.github.pderakhshanfar.codecocoonplugin.config.CodeCocoonConfig
 import com.github.pderakhshanfar.codecocoonplugin.config.ConfigLoader
