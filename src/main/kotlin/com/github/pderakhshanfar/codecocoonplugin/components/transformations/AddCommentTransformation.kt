@@ -12,7 +12,7 @@ import com.intellij.psi.PsiFile
  * Works with Java and Kotlin.
  *
  * **NOTE**: _serves as a mere example of how to implement a custom transformation.
- * Note intended to be used in production_.
+ * Not intended to be used in production_.
  */
 class AddCommentTransformation(
     override val config: Map<String, Any>
@@ -37,44 +37,28 @@ class AddCommentTransformation(
     override fun apply(
         psiFile: PsiFile,
         virtualFile: VirtualFile,
-    ): TransformationResult {
-        val result = try {
-            val comment = createComment(psiFile.name, message)
-            val document = psiFile.document()
+    ): TransformationResult = try {
+        val comment = createComment(psiFile.name, message)
+        val document = psiFile.document()
 
-            val value = if (document != null) {
-                // Add comment at the beginning
-                document.insertString(0, "$comment\n\n")
-                TransformationResult.Success(
-                    message = "Added comment to ${virtualFile.name}",
-                    filesModified = 1
-                )
-            } else {
-                TransformationResult.Failure(
-                    "Could not get document for file ${psiFile.name}")
-            }
-            value
-        } catch (e: Exception) {
-            TransformationResult.Failure("Failed to add comment for file ${psiFile.name}", e)
-        }
+        val value = document?.let {
+            // Add comment at the beginning
+            document.insertString(0, "$comment\n\n")
+            TransformationResult.Success("Added comment to ${virtualFile.name}", filesModified = 1)
+        } ?: TransformationResult.Failure("Could not get document for file ${psiFile.name}")
 
-        return result
+        value
+    } catch (e: Exception) {
+        TransformationResult.Failure("Failed to add comment for file ${psiFile.name}", e)
     }
 
     /**
      * @param filename The filename of the file to add a comment to
      * @param message The comment message **without** any language-specific comment prefix (e.g., "//" for Java)
      */
-    private fun createComment(filename: String, message: String): String? {
-        val language = filename.let {
-            when {
-                it.endsWith(".java") -> Language.JAVA
-                it.endsWith(".kt") || it.endsWith(".kts") -> Language.KOTLIN
-                // defaults to Java-style comments
-                else -> Language.JAVA
-            }
-        }
-
+    private fun createComment(filename: String, message: String): String {
+        val extension = filename.substringAfterLast('.', "")
+        val language = Language.fromExtension(extension)
         return when (language) {
             Language.JAVA, Language.KOTLIN -> "// $message"
             else -> ""

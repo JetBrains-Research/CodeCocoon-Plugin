@@ -62,7 +62,6 @@ class HeadlessModeStarter : ApplicationStarter {
                 // Execute a transformation pipeline using the service
                 runCatching {
                     val transformationService = service<TransformationService>()
-                    // TODO: add `AddCommentTransformation` into config yaml
                     transformationService.executeTransformations(project, config, transformations)
                 }.onFailure { err ->
                     logger.error("[CodeCocoon Starter] Transformation Service failed with exception", err)
@@ -125,10 +124,6 @@ class HeadlessModeStarter : ApplicationStarter {
      *
      * The registration process ensures that the transformation is correctly mapped by its
      * unique ID in the registry, allowing it to be referenced dynamically during execution.
-     *
-     * Throws:
-     * - `IllegalArgumentException` if a duplicate transformation ID is registered.
-     * - `IllegalStateException` if there are issues with the registry setup.
      */
     private fun registerBuiltInTransformations() {
         TransformationRegistry.register(AddCommentTransformation.ID) { config -> AddCommentTransformation(config) }

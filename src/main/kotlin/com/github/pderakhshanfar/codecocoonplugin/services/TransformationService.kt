@@ -44,11 +44,12 @@ class TransformationService {
     ) {
         logger.info("[TransformationService] Starting transformation pipeline for project: ${project.name}")
 
+        // TODO: remove in the future
         // Step 1: List project files according to config
         val files = listProjectFiles(project, config.projectRoot, includeOnly = config.files)
-
         // Step 2: Print files to the console
         printFiles(files)
+
         // Step 3: Apply transformations to the project files
         applyTransformations(project, config, transformations, fileFilter)
 
@@ -56,16 +57,20 @@ class TransformationService {
     }
 
     /**
-     * Lists all files in the project, returning their paths relative to project root.
-     * Uses [smartReadAction] to safely access virtual file system.
+     * Lists all files in the project, returning their paths relative to the project root.
+     * Uses [smartReadAction] to safely access a virtual file system.
      * If [includeOnly] is non-empty, only include those exact relative paths.
      */
-    private suspend fun listProjectFiles(project: Project, rootPath: String?, includeOnly: List<String>): List<String> {
+    private suspend fun listProjectFiles(
+        project: Project,
+        rootPath: String?,
+        includeOnly: List<String>
+    ): List<String> {
         logger.info("[TransformationService] Discovering project files...")
         // It is good practice to log which path is being used
-        if (rootPath != null) logger.info("[TransformationService] Using provided root path: $rootPath")
-
-        // TODO: make it return a stream of filepaths
+        if (rootPath != null) {
+            logger.info("[TransformationService] Using provided root path: $rootPath")
+        }
 
         val files: List<String> = smartReadAction(project) {
             val projectRoot: VirtualFile = rootPath?.let { path ->
