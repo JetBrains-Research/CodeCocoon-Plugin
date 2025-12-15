@@ -30,11 +30,11 @@ class IntelliJTransformationExecutor(
         return try {
             when (transformation) {
                 is IntelliJAwareTransformation -> executeIntelliJTransformation(transformation, context)
-                else -> TransformationResult.Failure("Transformation ${transformation.name} must implement `IntelliJAwareTransformation`")
+                else -> TransformationResult.Failure("Transformation ${transformation.id} must implement `IntelliJAwareTransformation`")
             }
         } catch (err: Exception) {
             TransformationResult.Failure(
-                "Failed to execute transformation ${transformation.name} on ${context.language} file ${context.relativePath}", err)
+                "Failed to execute transformation ${transformation.id} on ${context.language} file ${context.relativePath}", err)
         }
     }
 
@@ -52,7 +52,7 @@ class IntelliJTransformationExecutor(
                     TransformationResult.Failure("Cannot get PSI for file: ${context.relativePath}")
                 )
 
-            writeCommandAction(project, transformation.name) {
+            writeCommandAction(project, transformation.id) {
                 transformation.apply(psiFile, virtualFile)
             }
         }
