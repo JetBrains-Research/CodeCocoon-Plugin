@@ -1,5 +1,6 @@
 package com.github.pderakhshanfar.codecocoonplugin.appstarter
 
+import com.github.pderakhshanfar.codecocoonplugin.components.transformation.AddCommentTransformation
 import com.github.pderakhshanfar.codecocoonplugin.components.transformations.TransformationRegistry
 import com.github.pderakhshanfar.codecocoonplugin.config.CodeCocoonConfig
 import com.github.pderakhshanfar.codecocoonplugin.config.ConfigLoader
@@ -42,6 +43,9 @@ class HeadlessModeStarter : ApplicationStarter {
 
         // Clean .idea folder to ensure fresh indexing
         cleanIdeaFolder(projectPath)
+
+        // Register transformations
+        registerBuiltInTransformations()
 
         // Use runBlocking to run coroutine-based code
         runBlocking {
@@ -111,13 +115,35 @@ class HeadlessModeStarter : ApplicationStarter {
     }
 
     /**
+     * Registers built-in transformations in the `TransformationRegistry`.
+     *
+     * This function sets up predefined transformations that are available for use.
+     * Each transformation is identified by a unique ID and is associated with a factory
+     * function that creates an instance of the transformation when invoked. Specifically,
+     * this implementation registers the "add-comment-transformation," which adds comments
+     * to the beginning of files.
+     *
+     * The registration process ensures that the transformation is correctly mapped by its
+     * unique ID in the registry, allowing it to be referenced dynamically during execution.
+     *
+     * Throws:
+     * - `IllegalArgumentException` if a duplicate transformation ID is registered.
+     * - `IllegalStateException` if there are issues with the registry setup.
+     */
+    private fun registerBuiltInTransformations() {
+        TransformationRegistry.register(AddCommentTransformation.ID) { config -> AddCommentTransformation(config) }
+    }
+
+    /**
      * Resolves transformation ids from YAML to concrete Transformation instances via the registry.
      * - Preserves the original order from the config.
      * - Enforces uniqueness: throws on duplicate ids.
      * - Throws on unknown ids and lists known ids to help configuration.
      */
     private fun mapToTransformations(config: CodeCocoonConfig): List<Transformation> {
-        if (config.transformations.isEmpty()) return emptyList()
+        if (config.transformations.isEmpty()) {
+            return emptyList()
+        }
 
         val seen = LinkedHashSet<String>()
         val result = mutableListOf<Transformation>()
@@ -127,6 +153,7 @@ class HeadlessModeStarter : ApplicationStarter {
             if (!seen.add(id)) {
                 throw IllegalArgumentException("Duplicate transformation id='$id' in codecocoon.yml. Ids must be unique.")
             }
+
             val instance = TransformationRegistry.create(id, t.config) ?: run {
                 val known = TransformationRegistry.knownIds().sorted().joinToString(", ")
                 throw IllegalArgumentException("Unknown transformation id='$id'. Known ids: [$known]")

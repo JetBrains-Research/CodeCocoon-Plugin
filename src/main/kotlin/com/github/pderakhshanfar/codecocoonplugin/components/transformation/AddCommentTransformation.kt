@@ -18,8 +18,11 @@ import com.intellij.psi.PsiFile
  * **NOTE**: _serves as a mere example of how to implement a custom transformation.
  * Note intended to be used in production_.
  */
-class AddCommentTransformation : TextBasedTransformation(), IntelliJAwareTransformation {
-    override val name: String = "add-comment-transformation"
+class AddCommentTransformation(
+    override val config: Map<String, Any>
+) : TextBasedTransformation(), IntelliJAwareTransformation {
+    override val id: String = ID
+    override val name: String = id
     override val description: String = "Adds a comment at the beginning of the file"
 
     override val supportedLanguages: Set<Language> = setOf(
@@ -27,7 +30,13 @@ class AddCommentTransformation : TextBasedTransformation(), IntelliJAwareTransfo
         Language.KOTLIN,
     )
 
-    private val message = "Hello world from $name!"
+    private val message: String = run {
+        val param = "message"
+        if (param !in config || config[param] !is String) {
+            throw IllegalArgumentException("Missing required config parameter '$param' of type string")
+        }
+        config[param] as String
+    }
 
     override fun apply(
         psiFile: PsiFile,
@@ -57,7 +66,7 @@ class AddCommentTransformation : TextBasedTransformation(), IntelliJAwareTransfo
     }
 
     /**
-     * @
+     * @param filename The filename of the file to add a comment to
      * @param message The comment message **without** any language-specific comment prefix (e.g., "//" for Java)
      */
     private fun createComment(filename: String, message: String): String? {
@@ -74,5 +83,9 @@ class AddCommentTransformation : TextBasedTransformation(), IntelliJAwareTransfo
             Language.JAVA, Language.KOTLIN -> "// $message"
             else -> ""
         }
+    }
+
+    companion object {
+        const val ID = "add-comment-transformation"
     }
 }
