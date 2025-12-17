@@ -1,5 +1,5 @@
 # Absolute or project-local path to the root of the project you want to transform
-projectRoot: "/Users/vartiukhov/dev/projects/samples/ij-demo"
+projectRoot: "/path/to/project/root"
 
 # Optional: limit transformations to these files (relative to the root). Leave empty to target the entire project
 files: []
