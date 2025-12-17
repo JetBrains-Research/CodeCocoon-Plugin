@@ -11,13 +11,10 @@ import com.github.pderakhshanfar.codecocoonplugin.common.FileContext
  * when executing.
  */
 interface Transformation {
-    /** Unique identifier of the transformation type (e.g., "addComment"). */
-    val id: String
-
     /**
-     * Human-readable name for this transformation.
+     * Unique identifier of the transformation type (e.g., "addComment").
      */
-    val name: String
+    val id: String
 
     /**
      * Description of what this transformation does.

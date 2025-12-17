@@ -141,7 +141,7 @@ class TransformationService {
 
             for (transformation in transformations) {
                 if (transformation.accepts(context)) {
-                    logger.info("Applying ${transformation.name} to $filePath")
+                    logger.info("Applying ${transformation.id} to $filePath")
 
                     when (val result = executor.execute(transformation, context)) {
                         is TransformationResult.Success -> {

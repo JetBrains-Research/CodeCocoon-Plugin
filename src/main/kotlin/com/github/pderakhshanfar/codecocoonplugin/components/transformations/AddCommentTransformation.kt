@@ -18,7 +18,6 @@ class AddCommentTransformation(
     override val config: Map<String, Any>
 ) : TextBasedTransformation(), IntelliJAwareTransformation {
     override val id: String = ID
-    override val name: String = id
     override val description: String = "Adds a comment at the beginning of the file"
 
     override val supportedLanguages: Set<Language> = setOf(
