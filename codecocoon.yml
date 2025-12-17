@@ -1,5 +1,5 @@
 # Absolute or project-local path to the root of the project you want to transform
-projectRoot: "/absolute/path/to/your/project"
+projectRoot: "/Users/vartiukhov/dev/projects/samples/ij-demo"
 
 # Optional: limit transformations to these files (relative to the root). Leave empty to target the entire project
 files: []
@@ -8,8 +8,6 @@ files: []
 #   - id: unique identifier
 #   - config: arbitrary nested settings; only the selected transformation should interpret it
 transformations:
-  - id: "dummyTransformation1"
+  - id: "add-comment-transformation"
     config:
-      prefix: "Tmp_"
-      includeScopes:
-        - "src/main"
+      message: "Hello from `add-comment-transformation`!"

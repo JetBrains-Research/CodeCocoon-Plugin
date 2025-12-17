@@ -1,10 +1,12 @@
 package com.github.pderakhshanfar.codecocoonplugin.appstarter
 
-import com.github.pderakhshanfar.codecocoonplugin.config.ConfigLoader
-import com.github.pderakhshanfar.codecocoonplugin.services.TransformationService
-import com.github.pderakhshanfar.codecocoonplugin.components.JvmProjectConfigurator
+import com.github.pderakhshanfar.codecocoonplugin.components.transformations.AddCommentTransformation
 import com.github.pderakhshanfar.codecocoonplugin.components.transformations.TransformationRegistry
 import com.github.pderakhshanfar.codecocoonplugin.config.CodeCocoonConfig
+import com.github.pderakhshanfar.codecocoonplugin.config.ConfigLoader
+import com.github.pderakhshanfar.codecocoonplugin.intellij.JvmProjectConfigurator
+import com.github.pderakhshanfar.codecocoonplugin.intellij.logging.withStdout
+import com.github.pderakhshanfar.codecocoonplugin.services.TransformationService
 import com.github.pderakhshanfar.codecocoonplugin.transformation.Transformation
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.application.ApplicationStarter
@@ -27,10 +29,9 @@ import kotlin.system.exitProcess
 class HeadlessModeStarter : ApplicationStarter {
     /** Sets the main (start) thread for the IDE in headless as not EDT. */
     override val requiredModality: Int = ApplicationStarter.NOT_IN_EDT
+    private val logger = thisLogger().withStdout()
 
     override fun main(args: List<String>) {
-        val logger = thisLogger()
-
         val config = ConfigLoader.load()
         val projectPath = config.projectRoot
         if (projectPath.isNullOrBlank()) {
@@ -38,11 +39,13 @@ class HeadlessModeStarter : ApplicationStarter {
             exitProcess(1)
         }
 
-        println("[CodeCocoon Starter] Starting with project path: $projectPath")
         logger.info("[CodeCocoon Starter] Starting with project path: $projectPath")
 
         // Clean .idea folder to ensure fresh indexing
         cleanIdeaFolder(projectPath)
+
+        // Register transformations
+        registerBuiltInTransformations()
 
         // Use runBlocking to run coroutine-based code
         runBlocking {
@@ -65,7 +68,6 @@ class HeadlessModeStarter : ApplicationStarter {
                     err.printStackTrace(System.err)
                 }.onSuccess {
                     logger.info("[CodeCocoon Starter] Transformation Service completed successfully")
-                    println("[CodeCocoon Starter] Transformation Service completed successfully")
                 }
 
                 // close project and exit
@@ -74,7 +76,6 @@ class HeadlessModeStarter : ApplicationStarter {
                 withContext(Dispatchers.EDT) {
                     ProjectManager.getInstance().closeAndDispose(project)
                     logger.info("[CodeCocoon Starter] Project is closed successfully")
-                    println("[CodeCocoon Starter] Project is closed successfully")
                 }
                 Disposer.dispose(disposable)
                 exitProcess(0)
@@ -91,13 +92,13 @@ class HeadlessModeStarter : ApplicationStarter {
         val ideaFolderPath = "$projectPath${File.separator}.idea"
         val ideaFolder = File(ideaFolderPath)
         if (ideaFolder.exists()) {
-            thisLogger().info("[CodeCocoon Starter] Removing existing .idea folder")
+            logger.info("[CodeCocoon Starter] Removing existing .idea folder")
             ideaFolder.deleteRecursively()
         }
     }
 
     private suspend fun openProject(projectPath: String, disposable: Disposable) = try {
-        thisLogger().info("[CodeCocoon Starter] Opening project: $projectPath")
+        logger.info("[CodeCocoon Starter] Opening project: $projectPath")
 
         val project = JvmProjectConfigurator().openProject(
             Paths.get(projectPath),
@@ -105,11 +106,27 @@ class HeadlessModeStarter : ApplicationStarter {
             fullResolveRequired = true,
         )
 
-        thisLogger().info("[CodeCocoon Starter] Project opened successfully: ${project.name}")
+        logger.info("[CodeCocoon Starter] Project opened successfully: ${project.name}")
         project
     } catch (e: Throwable) {
-        thisLogger().error("[CodeCocoon Starter] Failed to open project", e)
+        logger.error("[CodeCocoon Starter] Failed to open project", e)
         throw e
+    }
+
+    /**
+     * Registers built-in transformations in the `TransformationRegistry`.
+     *
+     * This function sets up predefined transformations that are available for use.
+     * Each transformation is identified by a unique ID and is associated with a factory
+     * function that creates an instance of the transformation when invoked. Specifically,
+     * this implementation registers the "add-comment-transformation," which adds comments
+     * to the beginning of files.
+     *
+     * The registration process ensures that the transformation is correctly mapped by its
+     * unique ID in the registry, allowing it to be referenced dynamically during execution.
+     */
+    private fun registerBuiltInTransformations() {
+        TransformationRegistry.register(AddCommentTransformation.ID) { config -> AddCommentTransformation(config) }
     }
 
     /**
@@ -119,7 +136,9 @@ class HeadlessModeStarter : ApplicationStarter {
      * - Throws on unknown ids and lists known ids to help configuration.
      */
     private fun mapToTransformations(config: CodeCocoonConfig): List<Transformation> {
-        if (config.transformations.isEmpty()) return emptyList()
+        if (config.transformations.isEmpty()) {
+            return emptyList()
+        }
 
         val seen = LinkedHashSet<String>()
         val result = mutableListOf<Transformation>()
@@ -129,15 +148,15 @@ class HeadlessModeStarter : ApplicationStarter {
             if (!seen.add(id)) {
                 throw IllegalArgumentException("Duplicate transformation id='$id' in codecocoon.yml. Ids must be unique.")
             }
+
             val instance = TransformationRegistry.create(id, t.config) ?: run {
                 val known = TransformationRegistry.knownIds().sorted().joinToString(", ")
                 throw IllegalArgumentException("Unknown transformation id='$id'. Known ids: [$known]")
             }
-            instance.parseConfig()
+
             result.add(instance)
         }
 
         return result
     }
-
 }

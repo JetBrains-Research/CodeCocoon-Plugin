@@ -67,6 +67,7 @@ dependencies {
 
         // Adding submodules
         pluginComposedModule(implementation(project(":core")))
+        pluginComposedModule(implementation(project(":java")))
     }
 
     // YAML parser for config loading
