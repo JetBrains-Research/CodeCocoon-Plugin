@@ -16,6 +16,7 @@ import com.intellij.psi.PsiMethod
 import com.intellij.psi.PsiModifier
 import com.intellij.psi.PsiRecursiveElementVisitor
 import com.intellij.psi.search.GlobalSearchScope
+import com.intellij.psi.search.searches.ClassInheritorsSearch
 import com.intellij.psi.search.searches.OverridingMethodsSearch
 import com.intellij.psi.search.searches.ReferencesSearch
 import kotlinx.coroutines.runBlocking
@@ -46,11 +47,23 @@ class RenameMethodTransformation(
                     return TransformationResult.Skipped("No public methods found in ${virtualFile.name}")
                 }
 
-                val newNames = publicMethods.map { method ->
+                val newNames = publicMethods.mapNotNull { method ->
                     runBlocking {
-                        method to getNewMethodName(method)
-                    }
+                        val suggestedName = getNewMethodName(method)
 
+                        // Validation check
+                        if (isNameAvailable(method, suggestedName)) {
+                            method to suggestedName
+                        } else {
+                            // Fallback: try adding a suffix or skip
+                            val fallbackName = "${suggestedName}Internal"
+                            if (isNameAvailable(method, fallbackName)) {
+                                method to fallbackName
+                            } else {
+                                null // Skip this method to avoid compilation errors
+                            }
+                        }
+                    }
                 }
 
                 // Rename each method and all its usages across the project
@@ -78,6 +91,35 @@ class RenameMethodTransformation(
     companion object {
         const val ID = "rename-method-transformation"
     }
+}
+
+private fun isNameAvailable(method: PsiMethod, newName: String): Boolean {
+    val psiClass = method.containingClass ?: return true
+
+    // 1. Check the current class and all SUPER classes
+    val existingMethods = psiClass.findMethodsByName(newName, true)
+    for (existing in existingMethods) {
+        if (haveSameSignature(method, existing)) return false
+    }
+
+    // 2. Check all subclasses
+    val inheritors = ClassInheritorsSearch.search(psiClass).findAll()
+    for (subClass in inheritors) {
+        // Check if the subclass has a method that would collide with the new name
+        val collisionInSub = subClass.findMethodsByName(newName, false)
+        for (existing in collisionInSub) {
+            if (haveSameSignature(method, existing)) return false
+        }
+    }
+
+    return true
+}
+
+/**
+ * Helper to check if two methods have the same parameter types.
+ */
+private fun haveSameSignature(m1: PsiMethod, m2: PsiMethod): Boolean {
+    return m1.manager.areElementsEquivalent(m1.parameterList, m2.parameterList)
 }
 
 @Serializable
