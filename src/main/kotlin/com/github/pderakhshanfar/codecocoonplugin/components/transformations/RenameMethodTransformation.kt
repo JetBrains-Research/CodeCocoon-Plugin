@@ -1,16 +1,26 @@
 package com.github.pderakhshanfar.codecocoonplugin.components.transformations
 
+import ai.koog.prompt.dsl.prompt
+import ai.koog.prompt.executor.clients.openai.OpenAIModels
 import com.github.pderakhshanfar.codecocoonplugin.common.FileContext
+import com.github.pderakhshanfar.codecocoonplugin.common.LLM
 import com.github.pderakhshanfar.codecocoonplugin.executor.TransformationResult
 import com.github.pderakhshanfar.codecocoonplugin.intellij.psi.document
 import com.github.pderakhshanfar.codecocoonplugin.java.JavaTransformation
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.roots.ProjectFileIndex
 import com.intellij.openapi.vfs.VirtualFile
-import com.intellij.psi.*
+import com.intellij.psi.PsiElement
+import com.intellij.psi.PsiFile
+import com.intellij.psi.PsiMethod
+import com.intellij.psi.PsiModifier
+import com.intellij.psi.PsiRecursiveElementVisitor
 import com.intellij.psi.search.GlobalSearchScope
 import com.intellij.psi.search.searches.OverridingMethodsSearch
 import com.intellij.psi.search.searches.ReferencesSearch
+import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.Serializable
+
 
 class RenameMethodTransformation(
     override val config: Map<String, Any>
@@ -37,7 +47,10 @@ class RenameMethodTransformation(
                 }
 
                 val newNames = publicMethods.map { method ->
-                    method to "${method.name}_renamed"
+                    runBlocking {
+                        method to getNewMethodName(method)
+                    }
+
                 }
 
                 // Rename each method and all its usages across the project
@@ -67,6 +80,31 @@ class RenameMethodTransformation(
     }
 }
 
+@Serializable
+data class MethodName(val name: String)
+
+private suspend fun getNewMethodName(method: PsiMethod): String {
+
+    val methodRenamePrompt = prompt("method-rename-prompt") {
+        system {
+            +"You are an agents used for finding semantically similar method names in Java codebases."
+            +"Your output is used in a metamorphic transformation pipeline."
+        }
+        user {
+            +"The method name is: ${method.name}"
+            +"The method body is: ${method.body?.text}"
+            +"The class name is: ${method.containingClass?.name}"
+            +"Return the new method name that is a valid Java identifier. The new name must be sematically similar to the old name."
+        }
+    }
+
+    val llm = LLM.fromGrazie(OpenAIModels.Chat.GPT5Mini, System.getenv("GRAZIE_TOKEN"))
+    val result = llm.structuredRequest<MethodName>(
+        prompt = methodRenamePrompt
+    )
+
+    return result!!.name
+}
 
 /**
  * Renames a method and all its usages across the entire project.
@@ -83,6 +121,7 @@ private fun renameMethodAndUsages(project: Project, method: PsiMethod, newName: 
     method.containingFile?.let { modifiedFiles.add(it) }
 
     for (reference in allReferences) {
+        println("      -> Renaming reference in ${reference.element.containingFile?.virtualFile?.path}")
         try {
             reference.handleElementRename(newName)
             reference.element.containingFile?.let { modifiedFiles.add(it) }
@@ -140,9 +179,9 @@ private fun findAllValidMethods(psiFile: PsiFile): List<PsiMethod> {
         if (usedInNonJavaFile) return@filter false
 
         // 5. Public API Guard
-//        if (method.hasModifierProperty(PsiModifier.PUBLIC) && references.isEmpty()) {
-//            return@filter false
-//        }
+        if (method.hasModifierProperty(PsiModifier.PUBLIC) && references.isEmpty()) {
+            return@filter false
+        }
 
         // 6. Basic Filters
         method.annotations.isEmpty() &&
