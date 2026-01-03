@@ -38,6 +38,12 @@ repositories {
 
 }
 
+configurations.testRuntimeClasspath {
+    if (name.contains("RuntimeClasspath")) {
+        exclude(group = "org.jetbrains.kotlinx", module = "kotlinx-coroutines-core")
+    }
+}
+
 // Configure Koog and Grazie globally
 allprojects {
     repositories {
