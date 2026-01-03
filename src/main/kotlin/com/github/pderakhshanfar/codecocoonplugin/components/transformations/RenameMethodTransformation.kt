@@ -28,7 +28,7 @@ class RenameMethodTransformation(
 ) : JavaTransformation, IntelliJAwareTransformation {
     override val id: String = ID
     override val description: String =
-        "Renames all public methods in the given file (excluding constructors, getters, setters, toString)"
+        "Renames all methods that match the criteria, including their usages and references."
 
     override fun accepts(context: FileContext): Boolean {
         return super.accepts(context)
@@ -44,7 +44,7 @@ class RenameMethodTransformation(
                 val publicMethods: List<PsiMethod> = findAllValidMethods(psiFile)
 
                 if (publicMethods.isEmpty()) {
-                    return TransformationResult.Skipped("No public methods found in ${virtualFile.name}")
+                    return TransformationResult.Skipped("No matching methods found in ${virtualFile.name}")
                 }
 
                 val newNames = publicMethods.mapNotNull { method ->
@@ -73,7 +73,7 @@ class RenameMethodTransformation(
                 }
 
                 TransformationResult.Success(
-                    message = "Renamed ${publicMethods.size} public methods in ${virtualFile.name}",
+                    message = "Renamed ${publicMethods.size} methods in ${virtualFile.name}",
                     filesModified = modifiedFiles.size
                 )
             } else {
