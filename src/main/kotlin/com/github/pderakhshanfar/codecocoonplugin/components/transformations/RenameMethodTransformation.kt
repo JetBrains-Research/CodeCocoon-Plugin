@@ -207,11 +207,11 @@ class RenameMethodTransformation(
                 if (extendsLibraryInterface) return@filter false
             }
 
-            // 3. Inheritance Guard:
-            // Catch methods that override library-defined methods (e.g., toString, or SDK methods)
+            // Inheritance Guard:
+            // Catch methods that override methods
             if (method.findSuperMethods().isNotEmpty()) return@filter false
 
-            // 4. Non-Code Usage Guard (Your existing logic)
+            // Non-Code Usage Guard
             val references = ReferencesSearch.search(method).findAll()
             val usedInNonJavaFile = references.any { ref ->
                 val fileType = ref.element.containingFile.fileType.name
@@ -219,15 +219,15 @@ class RenameMethodTransformation(
             }
             if (usedInNonJavaFile) return@filter false
 
-            // 5. Public API Guard
+            // Public API Guard
             if (method.hasModifierProperty(PsiModifier.PUBLIC) && references.isEmpty()) {
                 return@filter false
             }
 
-            // 6. Is not a test
+            // Is not a test
             if (fileIndex.isInTestSourceContent(psiFile.virtualFile)) return@filter false
 
-            // 7. Basic Filters
+            // Basic Filters
             method.annotations.isEmpty() &&
                     !method.isConstructor &&
                     method.name != "toString" &&
