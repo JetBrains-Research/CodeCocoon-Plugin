@@ -43,7 +43,7 @@ object ConfigLoader {
                 val id = map["id"]?.toString() ?: return@mapNotNull null
 
                 @Suppress("UNCHECKED_CAST")
-                val cfg = (map["config"] as Map<String, Any>)
+                val cfg = (map["config"] as? Map<String, Any>) ?: emptyMap()
                 TransformationConfig(id = id, config = cfg)
             }
 
