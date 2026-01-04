@@ -1,6 +1,7 @@
 package com.github.pderakhshanfar.codecocoonplugin.appstarter
 
 import com.github.pderakhshanfar.codecocoonplugin.components.transformations.AddCommentTransformation
+import com.github.pderakhshanfar.codecocoonplugin.components.transformations.RenameClassTransformation
 import com.github.pderakhshanfar.codecocoonplugin.components.transformations.RenameMethodTransformation
 import com.github.pderakhshanfar.codecocoonplugin.components.transformations.TransformationRegistry
 import com.github.pderakhshanfar.codecocoonplugin.config.CodeCocoonConfig
@@ -136,6 +137,7 @@ class HeadlessModeStarter : ApplicationStarter {
     private fun registerBuiltInTransformations() {
         TransformationRegistry.register(AddCommentTransformation.ID) { config -> AddCommentTransformation(config) }
         TransformationRegistry.register(RenameMethodTransformation.ID) { config -> RenameMethodTransformation(config) }
+        TransformationRegistry.register(RenameClassTransformation.ID) { config -> RenameClassTransformation(config) }
     }
 
     /**
