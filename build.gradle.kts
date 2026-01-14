@@ -10,6 +10,7 @@ plugins {
     alias(libs.plugins.changelog) // Gradle Changelog Plugin
     alias(libs.plugins.qodana) // Gradle Qodana Plugin
     alias(libs.plugins.kover) // Gradle Kover Plugin
+    alias(libs.plugins.kotlin.serialization)
 }
 
 group = providers.gradleProperty("pluginGroup").get()
@@ -32,18 +33,50 @@ repositories {
     // IntelliJ Platform Gradle Plugin Repositories Extension - read more: https://plugins.jetbrains.com/docs/intellij/tools-intellij-platform-gradle-plugin-repositories-extension.html
     intellijPlatform {
         defaultRepositories()
+        jetbrainsIdeInstallers()
     }
 
-    if (spaceCredentialsProvided()) {
-        maven {
-            url = uri("https://packages.jetbrains.team/maven/p/testing-agents/grazie-llm-interaction")
-            credentials {
-                username = spaceUsername
-                password = spacePassword
+}
+
+configurations.testRuntimeClasspath {
+    if (name.contains("RuntimeClasspath")) {
+        exclude(group = "org.jetbrains.kotlinx", module = "kotlinx-coroutines-core")
+    }
+}
+
+// Configure Koog and Grazie globally
+allprojects {
+    repositories {
+        mavenCentral()
+
+        if (spaceCredentialsProvided()) {
+            maven {
+                url = uri("https://packages.jetbrains.team/maven/p/testing-agents/grazie-llm-interaction")
+                credentials {
+                    username = spaceUsername
+                    password = spacePassword
+                }
+            }
+            maven {
+                url = uri("https://packages.jetbrains.team/maven/p/grazi/grazie-platform-public")
             }
         }
-        maven {
-            url = uri("https://packages.jetbrains.team/maven/p/grazi/grazie-platform-public")
+    }
+
+    apply(plugin = "org.jetbrains.kotlin.jvm")
+    apply(plugin = "org.jetbrains.kotlin.plugin.serialization")
+    apply(plugin = "org.jetbrains.intellij.platform.module")
+    dependencies {
+        implementation("ai.koog:koog-agents:0.5.0")
+        compileOnly("org.jetbrains.kotlinx:kotlinx-coroutines-core") {
+            isTransitive = false
+        }
+        implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3")
+        implementation(kotlin("reflect"))
+        if (spaceCredentialsProvided()) {
+            implementation("org.jetbrains.research:grazie-llm-interaction:1.0-SNAPSHOT") {
+                exclude(group = "org.jetbrains.kotlinx", module = "kotlinx-coroutines-core")
+            }
         }
     }
 }
