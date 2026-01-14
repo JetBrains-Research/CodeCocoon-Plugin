@@ -1,6 +1,9 @@
 package com.github.pderakhshanfar.codecocoonplugin.appstarter
 
 import com.github.pderakhshanfar.codecocoonplugin.components.transformations.AddCommentTransformation
+import com.github.pderakhshanfar.codecocoonplugin.components.transformations.RenameClassTransformation
+import com.github.pderakhshanfar.codecocoonplugin.components.transformations.RenameMethodTransformation
+import com.github.pderakhshanfar.codecocoonplugin.components.transformations.RenameVariableTransformation
 import com.github.pderakhshanfar.codecocoonplugin.components.transformations.TransformationRegistry
 import com.github.pderakhshanfar.codecocoonplugin.config.CodeCocoonConfig
 import com.github.pderakhshanfar.codecocoonplugin.config.ConfigLoader
@@ -9,17 +12,15 @@ import com.github.pderakhshanfar.codecocoonplugin.intellij.logging.withStdout
 import com.github.pderakhshanfar.codecocoonplugin.services.TransformationService
 import com.github.pderakhshanfar.codecocoonplugin.transformation.Transformation
 import com.intellij.openapi.Disposable
+import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.ApplicationStarter
-import com.intellij.openapi.application.EDT
 import com.intellij.openapi.components.service
 import com.intellij.openapi.diagnostic.thisLogger
 import com.intellij.openapi.project.ProjectManager
 import com.intellij.openapi.util.Disposer
 import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.openapi.vfs.VfsUtil
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
-import kotlinx.coroutines.withContext
 import java.io.File
 import java.nio.file.Paths
 import kotlin.system.exitProcess
@@ -75,7 +76,7 @@ class HeadlessModeStarter : ApplicationStarter {
                 // close project and exit
                 logger.info("[CodeCocoon Starter] Execution completed")
 
-                withContext(Dispatchers.EDT) {
+                ApplicationManager.getApplication().invokeAndWait {
                     ProjectManager.getInstance().closeAndDispose(project)
                     logger.info("[CodeCocoon Starter] Project is closed successfully")
                 }
@@ -85,7 +86,7 @@ class HeadlessModeStarter : ApplicationStarter {
                 logger.error("[CodeCocoon Starter] Execution failed with exception", e)
                 e.printStackTrace(System.err)
                 Disposer.dispose(disposable)
-                exitProcess(1)
+                throw e
             }
         }
     }
@@ -136,6 +137,9 @@ class HeadlessModeStarter : ApplicationStarter {
      */
     private fun registerBuiltInTransformations() {
         TransformationRegistry.register(AddCommentTransformation.ID) { config -> AddCommentTransformation(config) }
+        TransformationRegistry.register(RenameMethodTransformation.ID) { config -> RenameMethodTransformation(config) }
+        TransformationRegistry.register(RenameClassTransformation.ID) { config -> RenameClassTransformation(config) }
+        TransformationRegistry.register(RenameVariableTransformation.ID) { config -> RenameVariableTransformation(config) }
     }
 
     /**
