@@ -5,16 +5,14 @@ import ai.koog.prompt.executor.clients.openai.OpenAIModels
 import com.github.pderakhshanfar.codecocoonplugin.common.FileContext
 import com.github.pderakhshanfar.codecocoonplugin.common.LLM
 import com.github.pderakhshanfar.codecocoonplugin.executor.TransformationResult
+import com.github.pderakhshanfar.codecocoonplugin.intellij.logging.withStdout
 import com.github.pderakhshanfar.codecocoonplugin.intellij.psi.document
 import com.github.pderakhshanfar.codecocoonplugin.java.JavaTransformation
+import com.intellij.openapi.diagnostic.thisLogger
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.roots.ProjectFileIndex
 import com.intellij.openapi.vfs.VirtualFile
-import com.intellij.psi.PsiElement
-import com.intellij.psi.PsiFile
-import com.intellij.psi.PsiMethod
-import com.intellij.psi.PsiModifier
-import com.intellij.psi.PsiRecursiveElementVisitor
+import com.intellij.psi.*
 import com.intellij.psi.search.GlobalSearchScope
 import com.intellij.psi.search.searches.ClassInheritorsSearch
 import com.intellij.psi.search.searches.OverridingMethodsSearch
@@ -29,6 +27,7 @@ class RenameMethodTransformation(
     override val id: String = ID
     override val description: String =
         "Renames all methods that match the criteria, including their usages and references."
+    private val logger = thisLogger().withStdout()
 
     override fun accepts(context: FileContext): Boolean {
         return super.accepts(context)
@@ -88,10 +87,6 @@ class RenameMethodTransformation(
         return result
     }
 
-    companion object {
-        const val ID = "rename-method-transformation"
-    }
-
     private fun isNameAvailable(method: PsiMethod, newName: String): Boolean {
         val psiClass = method.containingClass ?: return true
 
@@ -122,7 +117,7 @@ class RenameMethodTransformation(
     }
 
     @Serializable
-    data class MethodName(val name: String)
+    private data class MethodName(val name: String)
 
     private suspend fun getNewMethodName(method: PsiMethod): String {
 
@@ -162,7 +157,7 @@ class RenameMethodTransformation(
         method.containingFile?.let { modifiedFiles.add(it) }
 
         for (reference in allReferences) {
-            println("      -> Renaming reference in ${reference.element.containingFile?.virtualFile?.path}")
+            logger.info("      -> Renaming reference in ${reference.element.containingFile?.virtualFile?.path}")
             try {
                 reference.handleElementRename(newName)
                 reference.element.containingFile?.let { modifiedFiles.add(it) }
@@ -230,16 +225,25 @@ class RenameMethodTransformation(
             // Basic Filters
             method.annotations.isEmpty() &&
                     !method.isConstructor &&
-                    method.name != "toString" &&
+                    method.name !in DISALLOWED_METHOD_NAMES &&
                     !method.name.startsWith("get") &&
                     !method.name.startsWith("set") &&
                     !method.name.startsWith("is")
         }
 
         if (filteredMethods.isNotEmpty()) {
-            println("  ↳ Found ${filteredMethods.size} matching methods in ${psiFile.virtualFile?.path}")
-            filteredMethods.forEach { println("    • ${it.name}") }
+            logger.info("  ↳ Found ${filteredMethods.size} matching methods in ${psiFile.virtualFile?.path}")
+            filteredMethods.forEach { logger.info("    • ${it.name}") }
         }
         return filteredMethods
+    }
+
+    companion object {
+        const val ID = "rename-method-transformation"
+
+        private val DISALLOWED_METHOD_NAMES = setOf(
+            "equals", "hashCode", "toString", "getClass",
+            "clone", "finalize", "wait", "notify", "notifyAll"
+        )
     }
 }
