@@ -44,33 +44,30 @@ class RenameClassTransformation(
                     return TransformationResult.Skipped("No matching classes found in ${virtualFile.name}")
                 }
 
-                val newNames = eligibleClasses.mapNotNull { psiClass ->
+                val selectedRenames = eligibleClasses.mapNotNull { psiClass ->
                     runBlocking {
-                        val suggestedName = getNewClassName(psiClass)
-
-                        // Validation check
-                        if (isNameAvailable(psiClass, suggestedName)) {
-                            psiClass to suggestedName
+                        val suggestions = getNewClassNames(psiClass)
+                        val chosen = suggestions.firstOrNull { isNameAvailable(psiClass, it) }
+                        if (chosen == null) {
+                            logger.warn("Skipping class ${psiClass.name} in ${psiFile.virtualFile?.path} — no available suggestion out of ${suggestions.size} tried")
+                            null
                         } else {
-                            // Fallback: try adding a suffix or skip
-                            val fallbackName = "${suggestedName}Internal"
-                            if (isNameAvailable(psiClass, fallbackName)) {
-                                psiClass to fallbackName
-                            } else {
-                                null // Skip this class to avoid compilation errors
-                            }
+                            psiClass to chosen
                         }
                     }
                 }
 
                 // Rename each class and all its usages across the project
-                for ((psiClass, newName) in newNames) {
+                for ((psiClass, newName) in selectedRenames) {
                     val files = renameClassAndUsages(psiFile.project, psiClass, newName)
                     modifiedFiles.addAll(files)
                 }
 
+                val renamedCount = selectedRenames.size
+                val totalCandidates = eligibleClasses.size
+                val skipped = totalCandidates - renamedCount
                 TransformationResult.Success(
-                    message = "Renamed ${eligibleClasses.size} classes in ${virtualFile.name}",
+                    message = "Renamed ${renamedCount}/${totalCandidates} classes in ${virtualFile.name}${if (skipped > 0) " (skipped: $skipped)" else ""}",
                     filesModified = modifiedFiles.size
                 )
             } else {
@@ -86,29 +83,53 @@ class RenameClassTransformation(
     }
 
     @Serializable
-    private data class ClassName(val name: String)
+    private data class ClassNameSuggestions(val suggestions: List<String>)
 
-    private suspend fun getNewClassName(psiClass: PsiClass): String {
+    private suspend fun getNewClassNames(psiClass: PsiClass, count: Int = DEFAULT_SUGGESTED_NAMES_SIZE): List<String> {
+        val classType = when {
+            psiClass.isInterface -> "interface"
+            psiClass.isEnum -> "enum class"
+            psiClass.hasModifierProperty(PsiModifier.ABSTRACT) -> "abstract class"
+            else -> "class"
+        }
         val classRenamePrompt = prompt("class-rename-prompt") {
             system {
-                +"You are an agents used for finding semantically similar class names in Java codebases."
+                +"You are an agent that proposes semantically similar Java class names."
                 +"Your output is used in a metamorphic transformation pipeline."
+                +"Your output will be parsed into JSON; strictly follow the required structure."
             }
             user {
-                +"The class name is: ${psiClass.name}"
-                +if (psiClass.isInterface) "The class is an interface." else if (psiClass.isEnum) "This is an ENUM." else ""
-                +"The methods in the class are: ${psiClass.methods.joinToString(", ") { it.name }}"
-                +"All fields in the class are: ${psiClass.allFields.joinToString(", ") { it.name }}"
-                +"Return the new class name that is a valid Java identifier. The new name must be sematically similar to the old name."
+                +"The name of the $classType is: ${psiClass.name}"
+                if (psiClass.methods.isNotEmpty()) +"The methods in the class are: ${psiClass.methods.joinToString(", ") { it.name }}"
+                if (psiClass.allFields.isNotEmpty()) +"All fields in the class are: ${psiClass.allFields.joinToString(", ") { it.name }}"
+                +"Return a JSON object with field 'suggestions' which is an ordered array of $count Java identifiers, from most to least fitting."
+                +"Every suggestion must be a valid Java identifier and semantically similar to the original name."
             }
+
         }
 
         val llm = LLM.fromGrazie(OpenAIModels.Chat.GPT5Mini)
-        val result = llm.structuredRequest<ClassName>(
+        val result = llm.structuredRequest<ClassNameSuggestions>(
             prompt = classRenamePrompt
         )
 
-        return result!!.name
+        return if (result != null) buildSuggestionList(result.suggestions) else emptyList()
+    }
+
+    private fun buildSuggestionList(rawSuggestions: List<String>): List<String> {
+        val normalized = rawSuggestions
+            .asSequence()
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+            .distinct()
+            .toList()
+
+        if (normalized.isEmpty()) return emptyList()
+
+        val firstSuggestion = normalized.first()
+        val internalFallback = "${firstSuggestion}Internal"
+
+        return if (normalized.contains(internalFallback)) normalized else normalized + internalFallback
     }
 
     private fun isNameAvailable(psiClass: PsiClass, newName: String): Boolean {
@@ -223,5 +244,6 @@ class RenameClassTransformation(
 
     companion object {
         const val ID = "rename-class-transformation"
+        private const val DEFAULT_SUGGESTED_NAMES_SIZE = 3
     }
 }
