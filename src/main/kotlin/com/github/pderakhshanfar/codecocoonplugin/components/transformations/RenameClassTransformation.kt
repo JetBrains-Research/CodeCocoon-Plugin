@@ -194,7 +194,7 @@ class RenameClassTransformation(
             if (fileIndex.isInTestSourceContent(psiFile.virtualFile)) return@filter false
 
             // Basic Filters
-            cls.annotations.isEmpty()
+            cls.annotations.isEmpty() && cls.name!!.length > 1
         }
 
         if (filteredClasses.isNotEmpty()) {
