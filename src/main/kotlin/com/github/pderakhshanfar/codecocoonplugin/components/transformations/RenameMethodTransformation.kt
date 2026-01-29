@@ -19,6 +19,7 @@ import com.intellij.psi.search.searches.OverridingMethodsSearch
 import com.intellij.psi.search.searches.ReferencesSearch
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.Serializable
+import kotlin.collections.emptyList
 
 
 class RenameMethodTransformation(
@@ -46,33 +47,30 @@ class RenameMethodTransformation(
                     return TransformationResult.Skipped("No matching methods found in ${virtualFile.name}")
                 }
 
-                val newNames = publicMethods.mapNotNull { method ->
+                val selectedRenames = publicMethods.mapNotNull { method ->
                     runBlocking {
-                        val suggestedName = getNewMethodName(method)
-
-                        // Validation check
-                        if (isNameAvailable(method, suggestedName)) {
-                            method to suggestedName
+                        val suggestions = getNewMethodNames(method)
+                        val chosen = suggestions.firstOrNull { isNameAvailable(method, it) }
+                        if (chosen == null) {
+                            logger.warn("Skipping method ${method.name} in ${psiFile.virtualFile?.path} — no available suggestion out of ${suggestions.size} tried")
+                            null
                         } else {
-                            // Fallback: try adding a suffix or skip
-                            val fallbackName = "${suggestedName}Internal"
-                            if (isNameAvailable(method, fallbackName)) {
-                                method to fallbackName
-                            } else {
-                                null // Skip this method to avoid compilation errors
-                            }
+                            method to chosen
                         }
                     }
                 }
 
                 // Rename each method and all its usages across the project
-                for ((method, newName) in newNames) {
+                for ((method, newName) in selectedRenames) {
                     val files = renameMethodAndUsages(psiFile.project, method, newName)
                     modifiedFiles.addAll(files)
                 }
 
+                val renamedCount = selectedRenames.size
+                val totalCandidates = publicMethods.size
+                val skipped = totalCandidates - renamedCount
                 TransformationResult.Success(
-                    message = "Renamed ${publicMethods.size} methods in ${virtualFile.name}",
+                    message = "Renamed ${renamedCount}/${totalCandidates} methods in ${virtualFile.name}${if (skipped > 0) " (skipped: $skipped)" else ""}",
                     filesModified = modifiedFiles.size
                 )
             } else {
@@ -117,29 +115,46 @@ class RenameMethodTransformation(
     }
 
     @Serializable
-    private data class MethodName(val name: String)
+    private data class MethodNameSuggestions(val suggestions: List<String>)
 
-    private suspend fun getNewMethodName(method: PsiMethod): String {
-
+    private suspend fun getNewMethodNames(method: PsiMethod, count: Int = DEFAULT_SUGGESTED_NAMES_SIZE): List<String> {
         val methodRenamePrompt = prompt("method-rename-prompt") {
             system {
-                +"You are an agents used for finding semantically similar method names in Java codebases."
+                +"You are an agent that proposes semantically similar Java method names."
                 +"Your output is used in a metamorphic transformation pipeline."
+                +"Your output will be parsed into JSON; strictly follow the required structure."
             }
             user {
-                +"The method name is: ${method.name}"
+                +"The current method name is: ${method.name}"
                 +"The method body is: ${method.body?.text}"
-                +"The class name is: ${method.containingClass?.name}"
-                +"Return the new method name that is a valid Java identifier. The new name must be sematically similar to the old name."
+                +"The containing class name is: ${method.containingClass?.name}"
+                +"Return a JSON object with field 'suggestions' which is an ordered array of $count Java identifiers, from most to least fitting."
+                +"Every suggestion must be a valid Java identifier and semantically similar to the original name."
             }
         }
 
         val llm = LLM.fromGrazie(OpenAIModels.Chat.GPT5Mini, System.getenv("GRAZIE_TOKEN"))
-        val result = llm.structuredRequest<MethodName>(
+        val result = llm.structuredRequest<MethodNameSuggestions>(
             prompt = methodRenamePrompt
         )
 
-        return result!!.name
+        return if (result != null) buildSuggestionList(result.suggestions) else emptyList()
+    }
+
+    private fun buildSuggestionList(rawSuggestions: List<String>): List<String> {
+        val normalized = rawSuggestions
+            .asSequence()
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+            .distinct()
+            .toList()
+
+        if (normalized.isEmpty()) return emptyList()
+
+        val firstSuggestion = normalized.first()
+        val internalFallback = "${firstSuggestion}Internal"
+
+        return if (normalized.contains(internalFallback)) normalized else normalized + internalFallback
     }
 
     /**
@@ -245,5 +260,7 @@ class RenameMethodTransformation(
             "equals", "hashCode", "toString", "getClass",
             "clone", "finalize", "wait", "notify", "notifyAll"
         )
+
+        private const val DEFAULT_SUGGESTED_NAMES_SIZE = 5
     }
 }
