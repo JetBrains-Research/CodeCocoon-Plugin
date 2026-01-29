@@ -4,8 +4,10 @@ import ai.koog.prompt.dsl.prompt
 import ai.koog.prompt.executor.clients.openai.OpenAIModels
 import com.github.pderakhshanfar.codecocoonplugin.common.LLM
 import com.github.pderakhshanfar.codecocoonplugin.executor.TransformationResult
+import com.github.pderakhshanfar.codecocoonplugin.intellij.logging.withStdout
 import com.github.pderakhshanfar.codecocoonplugin.intellij.psi.document
 import com.github.pderakhshanfar.codecocoonplugin.java.JavaTransformation
+import com.intellij.openapi.diagnostic.thisLogger
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.roots.ProjectFileIndex
 import com.intellij.openapi.vfs.VirtualFile
@@ -14,6 +16,7 @@ import com.intellij.psi.PsiClass
 import com.intellij.psi.PsiElement
 import com.intellij.psi.PsiFile
 import com.intellij.psi.PsiJavaFile
+import com.intellij.psi.PsiModifier
 import com.intellij.psi.PsiNameHelper
 import com.intellij.psi.PsiRecursiveElementVisitor
 import com.intellij.psi.search.GlobalSearchScope
@@ -26,6 +29,7 @@ class RenameClassTransformation(
 ) : JavaTransformation, IntelliJAwareTransformation {
     override val id: String = ID
     override val description: String = "Renames a class and all of its usages/references"
+    private val logger = thisLogger().withStdout()
 
     override fun apply(
         psiFile: PsiFile, virtualFile: VirtualFile
@@ -82,7 +86,7 @@ class RenameClassTransformation(
     }
 
     @Serializable
-    data class ClassName(val name: String)
+    private data class ClassName(val name: String)
 
     private suspend fun getNewClassName(psiClass: PsiClass): String {
         val classRenamePrompt = prompt("class-rename-prompt") {
@@ -99,7 +103,7 @@ class RenameClassTransformation(
             }
         }
 
-        val llm = LLM.fromGrazie(OpenAIModels.Chat.GPT5Mini, System.getenv("GRAZIE_TOKEN"))
+        val llm = LLM.fromGrazie(OpenAIModels.Chat.GPT5Mini)
         val result = llm.structuredRequest<ClassName>(
             prompt = classRenamePrompt
         )
@@ -119,8 +123,8 @@ class RenameClassTransformation(
         val newQualifiedName = if (packageName.isEmpty()) newName else "$packageName.$newName"
 
         // Check if a class with this qualified name already exists in the project
-        val facade = JavaPsiFacade.getInstance(project)
-        val existingClass = facade.findClass(newQualifiedName, GlobalSearchScope.allScope(project))
+        val existingClass = JavaPsiFacade.getInstance(project)
+            .findClass(newQualifiedName, GlobalSearchScope.allScope(project))
 
         if (existingClass != null) {
             return false // A class with this name already exists in this package
@@ -137,6 +141,16 @@ class RenameClassTransformation(
         return true
     }
 
+    /**
+     * Renames a class and updates all its usages within the project, ensuring consistency
+     * across the codebase. The method modifies the class name and refactors all references
+     * to reflect the new name. It also (automatically) renames the containing file.
+     *
+     * @param project IntelliJ project within which the class and its usages are being refactored.
+     * @param psiClass The class to be renamed.
+     * @param newName The new name to be assigned to the class.
+     * @return A set of PsiFiles that were modified during the renaming process.
+     */
     private fun renameClassAndUsages(
         project: Project, psiClass: PsiClass, newName: String
     ): MutableSet<PsiFile> {
@@ -145,6 +159,9 @@ class RenameClassTransformation(
 
         val modifiedFiles = mutableSetOf<PsiFile>()
 
+        val oldClassName = psiClass.name
+
+        // This also renames the containing file
         psiClass.setName(newName)
         psiClass.containingFile?.let { modifiedFiles.add(it) }
 
@@ -153,12 +170,12 @@ class RenameClassTransformation(
             if (containingFile.contains("/src/")) {
                 containingFile = containingFile.substringAfter("/src/")
             }
-            println("      -> Renaming reference in $containingFile")
+            logger.info("      -> Renaming reference in $containingFile")
             try {
                 reference.handleElementRename(newName)
                 reference.element.containingFile?.let { modifiedFiles.add(it) }
             } catch (_: Exception) {
-                throw Exception("Could not rename reference at ${reference.element.containingFile?.virtualFile?.path}:${reference.element.textOffset}")
+                throw Exception("Could not rename reference of class ${oldClassName} to ${newName} at ${reference.element.containingFile?.virtualFile?.path}:${reference.element.textOffset}")
             }
         }
 
@@ -198,8 +215,8 @@ class RenameClassTransformation(
         }
 
         if (filteredClasses.isNotEmpty()) {
-            println("  ↳ Found ${filteredClasses.size} matching classes in ${psiFile.virtualFile?.path}")
-            filteredClasses.forEach { println("    • ${it.name}") }
+            logger.info("  ↳ Found ${filteredClasses.size} matching classes in ${psiFile.virtualFile?.path}")
+            filteredClasses.forEach { logger.info("    • ${it.name}") }
         }
         return filteredClasses
     }
