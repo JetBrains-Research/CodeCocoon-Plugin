@@ -14,7 +14,12 @@ import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.psi.PsiFile
 
 /**
- * TODO: write descr
+ * Moves the given [VirtualFile] into a new directory specified in the transformation config (see below).
+ * BY default, the destination directory gets created if it doesn't exist (configurable via `createWhenMissing` param).
+ *
+ * The destination directory must be pre-defined; when it should be resolved in runtime,
+ * use [MoveFileToAiSuggestedDirectoryTransformation] that calls AI to suggest
+ * a new destination directory based on the project structure.
  *
  * Expected config schema:
  * ```yaml
@@ -23,11 +28,13 @@ import com.intellij.psi.PsiFile
  *   createWhenMissing: boolean (default: true) # optional, whether to create the destination directory if it doesn't exist
  * ```
  */
+// TODO: update the package after move -> make in this transformation
+// TODO(!!): adjust the imports within the moved file
 class MoveFileToNewDirectoryTransformation(
     override val config: Map<String, Any>
 ) : IntelliJAwareTransformation {
     override val id: String = ID
-    override val description: String = "Places the given file into a different location"
+    override val description: String = "Places the given file into a directory specified by the config"
 
     private val logger = thisLogger().withStdout()
 
