@@ -4,6 +4,7 @@ import com.github.pderakhshanfar.codecocoonplugin.components.transformations.Add
 import com.github.pderakhshanfar.codecocoonplugin.components.transformations.RenameClassTransformation
 import com.github.pderakhshanfar.codecocoonplugin.components.transformations.RenameMethodTransformation
 import com.github.pderakhshanfar.codecocoonplugin.components.transformations.RenameVariableTransformation
+import com.github.pderakhshanfar.codecocoonplugin.components.transformations.MoveFileToNewDirectoryTransformation
 import com.github.pderakhshanfar.codecocoonplugin.components.transformations.TransformationRegistry
 import com.github.pderakhshanfar.codecocoonplugin.config.CodeCocoonConfig
 import com.github.pderakhshanfar.codecocoonplugin.config.ConfigLoader
@@ -124,7 +125,7 @@ class HeadlessModeStarter : ApplicationStarter {
     }
 
     /**
-     * Registers built-in transformations in the `TransformationRegistry`.
+     * Registers built-in transformations in the [TransformationRegistry].
      *
      * This function sets up predefined transformations that are available for use.
      * Each transformation is identified by a unique ID and is associated with a factory
@@ -140,6 +141,7 @@ class HeadlessModeStarter : ApplicationStarter {
         TransformationRegistry.register(RenameMethodTransformation.ID) { config -> RenameMethodTransformation(config) }
         TransformationRegistry.register(RenameClassTransformation.ID) { config -> RenameClassTransformation(config) }
         TransformationRegistry.register(RenameVariableTransformation.ID) { config -> RenameVariableTransformation(config) }
+        TransformationRegistry.register(MoveFileToNewDirectoryTransformation.ID) { config -> MoveFileToNewDirectoryTransformation(config) }
     }
 
     /**
