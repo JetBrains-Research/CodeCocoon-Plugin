@@ -1,5 +1,6 @@
-package com.github.pderakhshanfar.codecocoonplugin.ai
+package com.github.pderakhshanfar.codecocoonplugin.suggestions.impl
 
+import ai.koog.agents.core.agent.AIAgent
 import ai.koog.agents.core.agent.config.AIAgentConfig
 import ai.koog.agents.core.tools.SimpleTool
 import ai.koog.agents.core.tools.ToolRegistry
@@ -9,8 +10,8 @@ import ai.koog.agents.ext.tool.file.ListDirectoryTool
 import ai.koog.agents.ext.tool.file.ReadFileTool
 import ai.koog.agents.features.eventHandler.feature.handleEvents
 import ai.koog.prompt.dsl.Prompt
-import ai.koog.prompt.executor.clients.openai.OpenAIModels
 import ai.koog.prompt.executor.llms.all.simpleOpenAIExecutor
+import ai.koog.prompt.llm.LLModel
 import ai.koog.rag.base.files.JVMFileSystemProvider
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
@@ -20,8 +21,10 @@ import kotlinx.serialization.json.jsonPrimitive
 import java.io.File
 
 
-suspend fun suggestNewDirectory(
+// TODO: use the `LLM` module somehow?
+internal suspend fun suggestNewDirectoryImpl(
     token: String,
+    model: LLModel,
     projectRoot: String,
     filepath: String,
     content: () -> String,
@@ -29,14 +32,14 @@ suspend fun suggestNewDirectory(
 ): List<String> {
     val executor = simpleOpenAIExecutor(token)
 
-    val agent = ai.koog.agents.core.agent.AIAgent(
+    val agent = AIAgent(
         promptExecutor = executor,
         // TODO: how to set temperature?
         agentConfig = AIAgentConfig(
             prompt = Prompt.build("file-relocator") {
                 system(buildSystemPrompt(projectRoot, existingOnly))
             },
-            model = OpenAIModels.Chat.GPT4o,
+            model = model,
             maxAgentIterations = 15
         ),
         toolRegistry = ToolRegistry {
@@ -58,11 +61,17 @@ suspend fun suggestNewDirectory(
     }
 
     val result = agent.run(agentInput = buildUserPrompt(filepath, content()))
+    println("""
+result:
+'''
+$result
+'''
+    """.trimIndent())
 
     return parseDirectorySuggestions(result)
 }
 
-class CheckSymbolConflictsTool(
+private class CheckSymbolConflictsTool(
     private val projectRoot: String
 ) : SimpleTool<CheckSymbolConflictsTool.Args>() {
     override val name = "check_conflicts"
