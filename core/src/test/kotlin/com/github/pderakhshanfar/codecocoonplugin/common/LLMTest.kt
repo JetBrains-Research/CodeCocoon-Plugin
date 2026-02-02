@@ -1,4 +1,4 @@
-package common
+package com.github.pderakhshanfar.codecocoonplugin.common
 
 import ai.koog.agents.core.tools.ToolDescriptor
 import ai.koog.prompt.dsl.ModerationResult
