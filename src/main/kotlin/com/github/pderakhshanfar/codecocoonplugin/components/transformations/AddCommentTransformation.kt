@@ -4,6 +4,7 @@ import com.github.pderakhshanfar.codecocoonplugin.common.Language
 import com.github.pderakhshanfar.codecocoonplugin.executor.TransformationResult
 import com.github.pderakhshanfar.codecocoonplugin.intellij.psi.document
 import com.github.pderakhshanfar.codecocoonplugin.transformation.TextBasedTransformation
+import com.github.pderakhshanfar.codecocoonplugin.transformation.require
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.psi.PsiFile
 
@@ -25,13 +26,7 @@ class AddCommentTransformation(
         Language.KOTLIN,
     )
 
-    private val message: String = config.let {
-        val param = "message"
-        if (!(param in it && it[param] is String)) {
-            throw IllegalArgumentException("Missing required config parameter '$param' of type string")
-        }
-        it[param] as String
-    }
+    private val message: String = config.require<String>("message")
 
     override fun apply(
         psiFile: PsiFile,
