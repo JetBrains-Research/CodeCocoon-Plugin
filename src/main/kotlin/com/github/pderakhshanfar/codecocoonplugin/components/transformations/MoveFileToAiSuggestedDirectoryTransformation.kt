@@ -7,6 +7,7 @@ import com.github.pderakhshanfar.codecocoonplugin.intellij.logging.withStdout
 import com.github.pderakhshanfar.codecocoonplugin.suggestions.SuggestionsApi
 import com.github.pderakhshanfar.codecocoonplugin.transformation.requireOrDefault
 import com.intellij.codeInsight.completion.JavaPsiClassReferenceElement
+import com.intellij.openapi.command.WriteCommandAction
 import com.intellij.openapi.diagnostic.thisLogger
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.roots.ProjectFileIndex
@@ -214,6 +215,65 @@ class MoveFileToAiSuggestedDirectoryTransformation(
 
             logger.info("Updating imports in referencing files...")
 
+            // the following importStatements right now import the
+            // symbols from the to-be-moved file as is (i.e., without the new package prefix).
+            // we collect them now to update with a new package prefix later after the file is moved.
+            /*val importsOfReferencedSymbols: List<PsiImportStatement> = buildList {
+                for ((referencingFile, referencedClasses) in referencedClassesInFiles) {
+                    // a referencing file can be either:
+                    //   1. From a different package -> update its import of the referenced class
+                    //   2. Within the same package, hence, it may not have an import of the referenced class -> add a new import
+                    val importList = referencingFile.importList ?: continue
+
+                    for (reference in referencedClasses) {
+                        // TODO: need a new imported name (no use of !!):
+                        // val newImportedName = reference.qualifiedName!!.replaceFirst(oldPackageName, newPackageName)
+                        //val newImportStatement = elementFactory.createImportStatementOnDemand(newImportedName)
+                        val newImportStatement = elementFactory.createImportStatement(reference)
+
+                        // search for the import statement that corresponds to the referenced class
+                        val oldImportStatement = importList.importStatements.find { it.qualifiedName == reference.qualifiedName }
+
+                        when {
+                            oldImportStatement != null -> {
+                                // update this import statement with the new package prefix
+                                logger.info("Replacing import in `${referencingFile.name}` `${oldImportStatement.text}` -> `${newImportStatement.text}`")
+                                oldImportStatement.replace(newImportStatement)
+                            }
+                            referencingFile.packageName == oldPackageName -> {
+                                // otherwise, if a referencing file is within the same package
+                                // as the file to be moved, add a new import statement
+                                logger.info("Adding a new import into the import list of `${referencingFile.name}`: `${newImportStatement.text}` (for the qualified name: ${reference.qualifiedName})")
+                                importList.add(newImportStatement)
+                            }
+                        }
+
+                        // add the new import statement into the list
+                        add(newImportStatement)
+                    }
+                }
+            }*/
+
+            // TODO: use write command action for above modifications ^
+
+            // ==== Moving the file into the new directory ==== //
+            val movedPsiFile = WriteCommandAction.runWriteCommandAction<PsiJavaFile>(project) {
+                // move the file
+                logger.info("Moving file to new location...")
+                virtualFile.move(requestor, targetVirtualFile)
+
+                // refresh and get updated PSI
+                val movedPsiFile = PsiManager.getInstance(project).findFile(virtualFile) as? PsiJavaFile
+                    ?: throw IllegalStateException("Cannot find moved file ${virtualFile.path}")
+
+                // update package statement
+                logger.info("Updating package statement to $newPackageName")
+                updatePackageStatement(movedPsiFile, newPackageName)
+
+                movedPsiFile
+            }
+
+            // add/update symbol imports in referencing files
             for ((referencingFile, referencedClasses) in referencedClassesInFiles) {
                 // a referencing file can be either:
                 //   1. From a different package -> update its import of the referenced class
@@ -221,64 +281,28 @@ class MoveFileToAiSuggestedDirectoryTransformation(
                 val importList = referencingFile.importList ?: continue
 
                 for (reference in referencedClasses) {
-                    // TODO: no use of !!
-                    println("[!!!] Considering reference: ${reference.qualifiedName}")
-                    val newImportedName = reference.qualifiedName!!.replaceFirst(oldPackageName, newPackageName)
                     val newImportStatement = elementFactory.createImportStatement(reference)
-                    //TODO: need a new imported name `val newImportStatement = elementFactory.createImportStatementOnDemand(newImportedName)`
+                    logger.info("Considered reference `${reference.qualifiedName}` (contained by `${reference.containingFile}` file) referenced in `${referencingFile.name}`:")
 
                     // search for the import statement that corresponds to the referenced class
                     val oldImportStatement = importList.importStatements.find { it.qualifiedName == reference.qualifiedName }
 
-                    if (oldImportStatement != null) {
-                        // update this import statement with the new package prefix
-                        logger.info("Replacing import in `${referencingFile.name}` `${oldImportStatement.text}` -> `${newImportStatement.text}`")
-                        oldImportStatement.replace(newImportStatement)
-                    } else if (referencingFile.packageName == oldPackageName) {
-                        // otherwise, if a referencing file is within the same package
-                        // as the file to be moved, add a new import statement
-                        logger.info("Adding a new import into the import list of `${referencingFile.name}`: `${newImportStatement.text}` (for the qualified name: ${reference.qualifiedName})")
-                        importList.add(newImportStatement)
+                    when {
+                        oldImportStatement != null -> {
+                            // update this import statement with the new package prefix
+                            logger.info("Replacing import in `${referencingFile.name}` `${oldImportStatement.text}` -> `${newImportStatement.text}`")
+                            oldImportStatement.replace(newImportStatement)
+                        }
+                        referencingFile.packageName == oldPackageName -> {
+                            // otherwise, if a referencing file was within the same package
+                            // as the moved file, add a new import statement
+                            logger.info("Adding a new import into the import list of `${referencingFile.name}`: `${newImportStatement.text}` (for the qualified name: ${reference.qualifiedName})")
+                            importList.add(newImportStatement)
+                        }
+                        else -> logger.error("Cannot find/add import statement for `${reference.qualifiedName}` in `${referencingFile.virtualFile.path}`. The transformation may be incorrect.")
                     }
                 }
-
-                // updateImportsInReferencingFile(referencingFile, oldPackageName, newPackageName, publicClasses)
-                // modifiedFilesCount += 1
             }
-
-
-
-
-            /*
-            val movedPsiFile = WriteCommandAction.runWriteCommandAction<PsiJavaFile>(project) {
-                // Step 4: Move the file
-                logger.info("Moving file to new location...")
-                virtualFile.move(requestor, targetVirtualFile)
-
-                // Refresh and get updated PSI
-                val movedPsiFile = PsiManager.getInstance(project).findFile(virtualFile) as? PsiJavaFile
-                    ?: throw IllegalStateException("Cannot find moved file")
-
-                // Step 5: Update package statement
-                logger.info("Updating package statement to $newPackageName")
-                updatePackageStatement(movedPsiFile, newPackageName)
-                modifiedFilesCount += 1
-
-                movedPsiFile
-            }
-
-            // use com.intellij.openapi.application.smartReadAction / NonBlockingReadAction(...).inSmartMode()
-            // Step 6: Fix imports in the moved file
-            logger.info("Fixing imports in moved file...")
-            fixImportsInMovedFile(movedPsiFile, oldPackageName)
-
-            // Step 7: Update imports in other files that reference moved classes
-            logger.info("Updating imports in ${referencingFiles.size} referencing files...")
-            for (referencingFile in referencingFiles) {
-                updateImportsInReferencingFile(referencingFile, oldPackageName, newPackageName, publicClasses)
-                modifiedFilesCount += 1
-            }
-            */
 
             TransformationResult.Success(
                 message = "Moved ${virtualFile.name} from package '$oldPackageName' to '$newPackageName'",
@@ -319,8 +343,8 @@ class MoveFileToAiSuggestedDirectoryTransformation(
             val references = ReferencesSearch.search(psiClass, searchScope).findAll()
             for (reference in references) {
                 val containingFile = reference.element.containingFile
+                // don't add a file that contains the given reference
                 if (containingFile is PsiJavaFile && containingFile != psiClass.containingFile) {
-                    // referencingFiles.add(containingFile)
                     if (!referencedClassesInFiles.containsKey(containingFile)) {
                         referencedClassesInFiles[containingFile] = mutableSetOf(psiClass)
                     } else {
