@@ -6,13 +6,17 @@ import com.github.pderakhshanfar.codecocoonplugin.executor.TransformationResult
 import com.github.pderakhshanfar.codecocoonplugin.intellij.logging.withStdout
 import com.github.pderakhshanfar.codecocoonplugin.suggestions.SuggestionsApi
 import com.github.pderakhshanfar.codecocoonplugin.transformation.requireOrDefault
+import com.intellij.openapi.command.WriteCommandAction
 import com.intellij.openapi.diagnostic.thisLogger
+import com.intellij.openapi.project.Project
+import com.intellij.openapi.roots.ProjectFileIndex
+import com.intellij.openapi.vfs.VfsUtil
 import com.intellij.openapi.vfs.VirtualFile
-import com.intellij.psi.PsiFile
-import kotlinx.coroutines.DelicateCoroutinesApi
-import kotlinx.coroutines.ExperimentalCoroutinesApi
-import kotlinx.coroutines.GlobalScope
-import kotlinx.coroutines.async
+import com.intellij.psi.*
+import com.intellij.psi.search.GlobalSearchScope
+import com.intellij.psi.search.searches.ReferencesSearch
+import kotlinx.coroutines.runBlocking
+import java.io.File
 
 
 /**
@@ -22,9 +26,10 @@ import kotlinx.coroutines.async
  * directory based on its content, usage, or other metadata. The target directory is determined dynamically based
  * on AI algorithms, making project organization more intuitive and efficient.
  *
+ * TODO: this transformation is tailored to Java projects; not multi-lingual!
+ *
  * Expected config schema:
  * ```yaml
- * # TODO: any other params?
  * config:
  *   existingOnly: boolean (default: false) # optional, whether to suggestion yet non-existent directories
  * ```
@@ -32,20 +37,21 @@ import kotlinx.coroutines.async
  * @property config Configuration parameters required for the transformation.
  * @constructor Initializes the transformation with the provided configuration map.
  */
-@OptIn(DelicateCoroutinesApi::class)
 class MoveFileToAiSuggestedDirectoryTransformation(
     override val config: Map<String, Any>,
 ) : IntelliJAwareTransformation {
     override val id = ID
     override val description = "Places the given file into a directory suggested by AI"
 
-    private val existingOnly = config.requireOrDefault("existingOnly", false)
+    private val existingOnly: Boolean = config.requireOrDefault("existingOnly", false)
 
     private val logger = thisLogger().withStdout()
 
-    override fun accepts(context: FileContext): Boolean = context.language == Language.JAVA
+    // TODO: for now, concentrate only of Java
+    override fun accepts(context: FileContext): Boolean {
+        return context.language == Language.JAVA
+    }
 
-    @OptIn(ExperimentalCoroutinesApi::class)
     override fun apply(
         psiFile: PsiFile,
         virtualFile: VirtualFile
@@ -53,30 +59,280 @@ class MoveFileToAiSuggestedDirectoryTransformation(
         val project = psiFile.project
         val requestor = this
 
-        // TODO: redo (or delete?) MoveFileToNewDirectoryTransformation
-        // 1. request new directory suggestion
-        // 1. prepare a new package for the moved file
-        // 1. move the file into the new location
-        // 1. update the package of the moved file
-        // 1. import resolution:
-        //   - in the moved file: import components from the previous package that were accessed without imports
-        //   - for every file that used components from the moved file: update the import statements accordingly
+        // Validate that this is a Java file
+        if (psiFile !is PsiJavaFile) {
+            return TransformationResult.Failure("File ${virtualFile.name} is not a Java file")
+        }
 
-        // TODO: is it legit? make apply a suspend function?
-        val suggestedDirectories = GlobalScope.async {
-            SuggestionsApi.suggestNewDirectory(
-                token = System.getenv("OPENAI_API_KEY"),
-                projectRoot = project.basePath!!,
-                filepath = virtualFile.path,
-                content = {
-                    // TODO: if text is too big output only public symbol declarations, not full text
-                    psiFile.text
-                },
-                existingOnly = existingOnly
+        return try {
+            // Step 1: Get AI directory suggestion
+            logger.info("Requesting AI directory suggestion for ${virtualFile.path}")
+            // TODO: anything better than runBlocking?
+            val suggestedDirectories = runBlocking {
+                SuggestionsApi.suggestNewDirectory(
+                    token = System.getenv("OPENAI_API_KEY"),
+                    projectRoot = project.basePath!!,
+                    filepath = virtualFile.path,
+                    content = { psiFile.text },
+                    existingOnly = existingOnly
+                )
+            }
+
+            if (suggestedDirectories.isEmpty()) {
+                return TransformationResult.Failure("No directory suggestions received from AI")
+            }
+
+            // TODO: traverse through the suggestions and peek the first applicable?
+            val targetDirectoryPath = suggestedDirectories.first()
+            logger.info("Selected target directory: $targetDirectoryPath")
+
+            // Step 2: Collect pre-move information
+            val oldPackageName = psiFile.packageName
+            val fileIndex = ProjectFileIndex.getInstance(project)
+            val sourceRoot = fileIndex.getSourceRootForFile(virtualFile)
+                ?: return TransformationResult.Failure("Cannot find source root for ${virtualFile.path}")
+
+            logger.info("Original package: $oldPackageName")
+
+            // Collect public classes/interfaces that will need import updates in other files
+            val publicClasses: List<PsiClass> = collectPublicClasses(psiFile)
+            logger.info("Found ${publicClasses.size} public classes: ${publicClasses.map { it.name }}")
+
+            // Find all files that reference these classes
+            val referencingFiles = findReferencingFiles(project, publicClasses)
+            logger.info("Found ${referencingFiles.size} files referencing classes from this file")
+
+            // Step 3: Calculate the new target package name
+            val targetDir = File(targetDirectoryPath)
+            val sourceRootPath = File(sourceRoot.path)
+
+            val newPackageName = if (targetDir.startsWith(sourceRootPath)) {
+                val relativePath = targetDir.relativeTo(sourceRootPath).path
+                relativePath.replace(File.separatorChar, '.')
+            } else {
+                return TransformationResult.Failure(
+                    "Target directory $targetDirectoryPath is not under source root ${sourceRoot.path}")
+            }
+
+            logger.info("New package will be: $newPackageName")
+
+            // Validate package name
+            if (!isValidPackageName(newPackageName)) {
+                return TransformationResult.Failure("Invalid package name: $newPackageName")
+            }
+
+            // Step 4: Create a target directory if needed
+            val targetVirtualDir = WriteCommandAction.runWriteCommandAction<VirtualFile>(project) {
+                VfsUtil.createDirectories(targetDirectoryPath)
+            }
+
+            if (!targetVirtualDir.isDirectory) {
+                return TransformationResult.Failure("Failed to create target directory: $targetDirectoryPath")
+            }
+
+            val modifiedFiles = mutableSetOf<PsiFile>()
+
+            WriteCommandAction.runWriteCommandAction(project) {
+                // Step 5: Move the file
+                logger.info("Moving file to new location...")
+                virtualFile.move(requestor, targetVirtualDir)
+
+                // Refresh and get updated PSI
+                val movedPsiFile = PsiManager.getInstance(project).findFile(virtualFile) as? PsiJavaFile
+                    ?: throw IllegalStateException("Cannot find moved file")
+
+                modifiedFiles.add(movedPsiFile)
+
+                // Step 6: Update package statement
+                logger.info("Updating package statement to $newPackageName")
+                updatePackageStatement(movedPsiFile, newPackageName)
+
+                // Step 7: Fix imports in the moved file
+                logger.info("Fixing imports in moved file...")
+                fixImportsInMovedFile(movedPsiFile, oldPackageName)
+
+                // Step 8: Update imports in other files that reference moved classes
+                logger.info("Updating imports in ${referencingFiles.size} referencing files...")
+                for (referencingFile in referencingFiles) {
+                    updateImportsInReferencingFile(referencingFile, oldPackageName, newPackageName, publicClasses)
+                    modifiedFiles.add(referencingFile)
+                }
+            }
+
+            TransformationResult.Success(
+                message = "Moved ${virtualFile.name} from package '$oldPackageName' to '$newPackageName'",
+                filesModified = modifiedFiles.size
             )
-        }.getCompleted()
+        } catch (e: Exception) {
+            logger.error("Failed to move file ${virtualFile.name}", e)
+            TransformationResult.Failure("Failed to move file ${virtualFile.name}: ${e.message}", e)
+        }
+    }
 
-        TODO("impl")
+    /**
+     * Collects all public classes and **interfaces** from the given Java file.
+     */
+    private fun collectPublicClasses(javaFile: PsiJavaFile): List<PsiClass> {
+        val publicClasses = mutableListOf<PsiClass>()
+        javaFile.accept(object : PsiRecursiveElementVisitor() {
+            override fun visitElement(element: PsiElement) {
+                super.visitElement(element)
+                // TODO: public abstract classes included? enums? what else?
+                if (element is PsiClass && element.hasModifierProperty(PsiModifier.PUBLIC)) {
+                    publicClasses.add(element)
+                }
+            }
+        })
+        return publicClasses
+    }
+
+    /**
+     * Finds all Java files that reference any of the given classes.
+     */
+    private fun findReferencingFiles(project: Project, classes: List<PsiClass>): Set<PsiJavaFile> {
+        val referencingFiles = mutableSetOf<PsiJavaFile>()
+        val searchScope = GlobalSearchScope.projectScope(project)
+
+        for (psiClass in classes) {
+            val references = ReferencesSearch.search(psiClass, searchScope).findAll()
+            for (reference in references) {
+                val containingFile = reference.element.containingFile
+                if (containingFile is PsiJavaFile && containingFile != psiClass.containingFile) {
+                    referencingFiles.add(containingFile)
+                }
+            }
+        }
+
+        return referencingFiles
+    }
+
+    /**
+     * Updates the package statement in the moved file.
+     */
+    private fun updatePackageStatement(javaFile: PsiJavaFile, newPackageName: String) {
+        val elementFactory = JavaPsiFacade.getElementFactory(javaFile.project)
+        val newPackageStatement = elementFactory.createPackageStatement(newPackageName)
+
+        val existingPackageStatement = javaFile.packageStatement
+        if (existingPackageStatement != null) {
+            existingPackageStatement.replace(newPackageStatement)
+        } else {
+            // If no package statement exists, add one at the beginning
+            val firstChild = javaFile.firstChild
+            if (firstChild != null) {
+                javaFile.addBefore(newPackageStatement, firstChild)
+            }
+        }
+    }
+
+    /**
+     * Fixes imports in the moved file by adding explicit imports for classes
+     * that were previously accessible from the same package without imports.
+     */
+    private fun fixImportsInMovedFile(movedFile: PsiJavaFile, oldPackageName: String) {
+        val elementFactory = JavaPsiFacade.getElementFactory(movedFile.project)
+        val referencesToFix = mutableSetOf<PsiClass>()
+
+        // Find all unqualified references in the moved file
+        movedFile.accept(object : PsiRecursiveElementVisitor() {
+            override fun visitElement(element: PsiElement) {
+                super.visitElement(element)
+                if (element is PsiJavaCodeReferenceElement) {
+                    val resolved = element.resolve()
+                    if (resolved is PsiClass) {
+                        // Check if this class is from the old package and not imported
+                        val resolvedFile = resolved.containingFile as? PsiJavaFile
+                        if (resolvedFile != null && resolvedFile.packageName == oldPackageName) {
+                            // Check if there's already an import for this class
+                            val qualifiedName = resolved.qualifiedName
+                            if (qualifiedName != null && !hasImport(movedFile, qualifiedName)) {
+                                referencesToFix.add(resolved)
+                            }
+                        }
+                    }
+                }
+            }
+        })
+
+        // Add imports for all references that need fixing
+        val importList = movedFile.importList
+        for (classToImport in referencesToFix) {
+            val qualifiedName = classToImport.qualifiedName
+            if (qualifiedName != null && importList != null) {
+                val importStatement = elementFactory.createImportStatement(classToImport)
+                // TODO: need any update on VFS? is simply adding to the list enough?
+                importList.add(importStatement)
+                logger.info("  - Added import: $qualifiedName")
+            }
+        }
+    }
+
+    /**
+     * Updates imports in files that reference classes from the moved file.
+     */
+    private fun updateImportsInReferencingFile(
+        referencingFile: PsiJavaFile,
+        oldPackageName: String,
+        newPackageName: String,
+        movedClasses: List<PsiClass>
+    ) {
+        val elementFactory = JavaPsiFacade.getElementFactory(referencingFile.project)
+        val importList = referencingFile.importList ?: return
+
+        val movedClassNames = movedClasses.mapNotNull { it.name }.toSet()
+
+        // Find and update import statements
+        val importsToUpdate = mutableListOf<PsiImportStatement>()
+        for (importStatement in importList.importStatements) {
+            val importedName = importStatement.qualifiedName ?: continue
+
+            // Check if this import is from the old package and references a moved class
+            if (importedName.startsWith("$oldPackageName.")) {
+                val className = importedName.substringAfterLast('.')
+                if (className in movedClassNames) {
+                    importsToUpdate.add(importStatement)
+                }
+            }
+        }
+
+        // Replace old imports with new ones
+        for (oldImport in importsToUpdate) {
+            val className = oldImport.qualifiedName?.substringAfterLast('.') ?: continue
+
+            // Find the actual class to import
+            val movedClass = movedClasses.find { it.name == className }
+            if (movedClass != null) {
+                val newImportStatement = elementFactory.createImportStatement(movedClass)
+                // TODO: should be done update write action? check other places also
+                oldImport.replace(newImportStatement)
+
+                val newQualifiedName = "$newPackageName.$className"
+                logger.info("  Updated import in ${referencingFile.name}: $oldPackageName.$className -> $newQualifiedName")
+            }
+        }
+    }
+
+    /**
+     * Checks if the given file has an import for the specified qualified name.
+     */
+    private fun hasImport(javaFile: PsiJavaFile, qualifiedName: String): Boolean {
+        val importList = javaFile.importList ?: return false
+        for (importStatement in importList.importStatements) {
+            if (importStatement.qualifiedName == qualifiedName) {
+                return true
+            }
+        }
+        return false
+    }
+
+    /**
+     * Validates that the package name is a valid Java identifier.
+     */
+    private fun isValidPackageName(packageName: String): Boolean {
+        if (packageName.isEmpty()) return true // default package
+        return packageName.split('.').all { part ->
+            part.isNotEmpty() && part[0].isJavaIdentifierStart() && part.all { it.isJavaIdentifierPart() }
+        }
     }
 
     companion object {
