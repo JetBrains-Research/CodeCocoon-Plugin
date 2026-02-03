@@ -2,6 +2,7 @@ package com.github.pderakhshanfar.codecocoonplugin.components.transformations
 
 import com.github.pderakhshanfar.codecocoonplugin.common.FileContext
 import com.github.pderakhshanfar.codecocoonplugin.common.Language
+import com.github.pderakhshanfar.codecocoonplugin.common.TransformationStepFailed
 import com.github.pderakhshanfar.codecocoonplugin.executor.TransformationResult
 import com.github.pderakhshanfar.codecocoonplugin.intellij.logging.withStdout
 import com.github.pderakhshanfar.codecocoonplugin.suggestions.SuggestionsApi
@@ -67,14 +68,21 @@ class MoveFileToAiSuggestedDirectoryTransformation(
         }
 
         return try {
+            // Step 2: Collect pre-move information
+            val oldPackageName = psiFile.packageName
+            val fileIndex = ProjectFileIndex.getInstance(project)
+            logger.info("Original package: $oldPackageName")
+
+
+
             // Step 1: Get AI directory suggestion
             logger.info("Requesting AI directory suggestion for ${virtualFile.path}")
-            // TODO: anything better than runBlocking?
             val suggestedDirectories = runBlocking {
                 SuggestionsApi.suggestNewDirectory(
                     token = System.getenv("OPENAI_API_KEY"),
                     projectRoot = project.basePath!!,
                     filepath = virtualFile.path,
+                    // TODO: extract only declarations if the file is big
                     content = { psiFile.text },
                     existingOnly = existingOnly
                 )
@@ -84,18 +92,22 @@ class MoveFileToAiSuggestedDirectoryTransformation(
                 return TransformationResult.Failure("No directory suggestions received from AI")
             }
 
+            val projectRoot = project.basePath ?: return TransformationResult.Failure("Cannot determine project base path")
+            val result = findSuitableDestinationDirectory(
+                project = project,
+                projectRoot = projectRoot,
+                suggestions = suggestedDirectories,
+            )
+
+            val (destinationDirectory, newPackageName) = when {
+                result.isSuccess -> result.getOrThrow()
+                else -> return TransformationResult.Failure(result.exceptionOrNull()?.message ?: "Unknown error")
+            }
+
+            /*
             // TODO: traverse through the suggestions and peek the first applicable?
             val targetDirectoryPath = suggestedDirectories.first()
             logger.info("Selected target directory: $targetDirectoryPath")
-
-            // Step 2: Collect pre-move information
-            val oldPackageName = psiFile.packageName
-            val fileIndex = ProjectFileIndex.getInstance(project)
-            // TODO: remove variable below?
-            val sourceRoot = fileIndex.getSourceRootForFile(virtualFile)
-                ?: return TransformationResult.Failure("Cannot find source root for ${virtualFile.path}")
-
-            logger.info("Original package: $oldPackageName")
 
 
             // Step 3: Calculate the target package name
@@ -113,6 +125,7 @@ class MoveFileToAiSuggestedDirectoryTransformation(
             val targetFile = File(absoluteTargetPath)
 
             // Create a directory structure if it doesn't exist, then get VirtualFile
+            // TODO: use `VfsUtil.createDirectories`
             Files.createDirectories(targetFile.toPath())
             val targetVirtualFile = VfsUtil.findFileByIoFile(targetFile, /* refreshIfNeeded = */ true)
                 ?: return TransformationResult.Failure("Cannot find virtual file for target: $absoluteTargetPath")
@@ -137,7 +150,7 @@ class MoveFileToAiSuggestedDirectoryTransformation(
                 return TransformationResult.Failure(
                     "Target directory $absoluteTargetPath is not under source root ${targetSourceRoot.path}")
             } else if (newPackageName == oldPackageName) {
-                // TODO: iterate through the suggested file location
+                // TODO: iterate through the suggested file locations
                 return TransformationResult.Skipped(
                     "The new package equals to the original one: $newPackageName. " +
                         "The suggested directory would remain unchanged: $absoluteTargetPath")
@@ -147,6 +160,7 @@ class MoveFileToAiSuggestedDirectoryTransformation(
             if (!isValidPackageName(newPackageName)) {
                 return TransformationResult.Failure("Invalid package name: $newPackageName")
             }
+             */
 
             logger.info("New package will be: $newPackageName")
 
@@ -219,7 +233,7 @@ class MoveFileToAiSuggestedDirectoryTransformation(
             WriteCommandAction.runWriteCommandAction<Unit>(project) {
                 // move the file
                 logger.info("Moving file to new location...")
-                virtualFile.move(requestor, targetVirtualFile)
+                virtualFile.move(requestor, destinationDirectory)
 
                 // refresh and get updated PSI
                 val movedPsiFile = PsiManager.getInstance(project).findFile(virtualFile) as? PsiJavaFile
@@ -276,6 +290,84 @@ class MoveFileToAiSuggestedDirectoryTransformation(
             TransformationResult.Failure("Failed to move file ${virtualFile.name}: ${e.message}", e)
         }
     }
+
+    data class DestinationDirectory(
+        val directory: VirtualFile,
+        val packageName: String,
+    )
+
+    private fun findSuitableDestinationDirectory(
+        project: Project,
+        projectRoot: String,
+        suggestions: List<String>,
+    ): Result<DestinationDirectory> {
+        val fileIndex = ProjectFileIndex.getInstance(project)
+        // TODO: traverse through the suggestions and peek the first applicable?
+        val targetDirectoryPath = suggestions.first()
+        logger.info("Selected target directory: $targetDirectoryPath")
+
+
+        // Step 3: Calculate the target package name
+        // In case when the suggestion API returns paths relative to the project root
+        val absoluteTargetPath = when {
+            targetDirectoryPath.toPath().isAbsolute -> targetDirectoryPath
+            else -> File(projectRoot, targetDirectoryPath).canonicalPath
+        }
+
+        logger.info("Resolved absolute target path: $absoluteTargetPath")
+
+        // Verify the target directory is under a source root
+        val targetFile = File(absoluteTargetPath)
+
+        // Create a directory structure if it doesn't exist, then get VirtualFile
+        // TODO: use `VfsUtil.createDirectories` and remove `targetFile`
+        Files.createDirectories(targetFile.toPath())
+
+        val targetVirtualFile = VfsUtil.findFileByIoFile(targetFile, /* refreshIfNeeded = */ true)
+            ?: return Result.failure(TransformationStepFailed(
+                "Cannot find virtual file for target: $absoluteTargetPath"))
+
+        val targetSourceRoot = fileIndex.getSourceRootForFile(targetVirtualFile)
+            ?: return Result.failure(TransformationStepFailed(
+                "Target directory $targetDirectoryPath is not under any source root in the project"))
+
+        // Calculate new package name relative to source root
+        val targetSourceRootPath = File(targetSourceRoot.path)
+        val newPackageName = when {
+            targetFile.startsWith(targetSourceRootPath) -> {
+                val relativePath = targetFile.relativeTo(targetSourceRootPath).path
+                if (relativePath.isEmpty()) "" else relativePath.replace(File.separatorChar, '.')
+            }
+            else -> null
+        }
+
+        // TODO: make the following checks for the package
+        /*
+        if (newPackageName == null) {
+                return TransformationResult.Failure(
+                    "Target directory $absoluteTargetPath is not under source root ${targetSourceRoot.path}")
+            } else if (newPackageName == oldPackageName) {
+                // TODO: iterate through the suggested file locations
+                return TransformationResult.Skipped(
+                    "The new package equals to the original one: $newPackageName. " +
+                        "The suggested directory would remain unchanged: $absoluteTargetPath")
+            }
+
+            // Validate package name
+            if (!isValidPackageName(newPackageName)) {
+                return TransformationResult.Failure("Invalid package name: $newPackageName")
+            }
+         */
+
+        return Result.success(
+            DestinationDirectory(
+                directory = targetVirtualFile,
+                // TODO: remove !!
+                packageName = newPackageName!!,
+            )
+        )
+    }
+
 
     /**
      * Collects all public classes and **interfaces** from the given Java file.
