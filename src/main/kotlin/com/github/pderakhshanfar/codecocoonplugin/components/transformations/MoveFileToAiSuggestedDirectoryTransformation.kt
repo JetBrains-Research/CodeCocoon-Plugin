@@ -6,8 +6,6 @@ import com.github.pderakhshanfar.codecocoonplugin.executor.TransformationResult
 import com.github.pderakhshanfar.codecocoonplugin.intellij.logging.withStdout
 import com.github.pderakhshanfar.codecocoonplugin.suggestions.SuggestionsApi
 import com.github.pderakhshanfar.codecocoonplugin.transformation.requireOrDefault
-import com.intellij.openapi.application.smartReadAction
-import com.intellij.openapi.application.smartReadActionBlocking
 import com.intellij.openapi.command.WriteCommandAction
 import com.intellij.openapi.diagnostic.thisLogger
 import com.intellij.openapi.project.Project
@@ -151,15 +149,65 @@ class MoveFileToAiSuggestedDirectoryTransformation(
                         "The suggested directory would remain unchanged: $absoluteTargetPath")
             }
 
-            logger.info("New package will be: $newPackageName")
-
             // Validate package name
             if (!isValidPackageName(newPackageName)) {
                 return TransformationResult.Failure("Invalid package name: $newPackageName")
             }
 
+            logger.info("New package will be: $newPackageName")
+
             var modifiedFilesCount = 0
 
+
+
+
+            // add imports to the to-be-moved file that will be missing after the move operation
+            val referencesToImport: List<PsiClass> = buildList {
+                psiFile.accept(object : PsiRecursiveElementVisitor() {
+                    override fun visitElement(element: PsiElement) {
+                        super.visitElement(element)
+                        if (element is PsiJavaCodeReferenceElement) {
+                            // or element.getElement()?
+                            val resolved = element.resolve()
+
+                            println("Considering resolved instance of element ${element.qualifiedName} (isResolvedNull=${resolved == null}, isResolvedPsiClass=${resolved is PsiClass}) with text:\n'''\n${resolved?.text?.take(200)}\n'''")
+
+                            if (resolved is PsiClass) {
+                                // Check if this class is from the old package and not imported
+                                val resolvedFile = resolved.containingFile as? PsiJavaFile
+                                if (resolvedFile != null && resolvedFile.packageName == oldPackageName) {
+                                    // Check if there's already an import for this class
+                                    val qualifiedName = resolved.qualifiedName
+                                    if (qualifiedName != null && !hasImport(psiFile, qualifiedName)) {
+                                        // add into the lists of references to import in the considered PSI file
+                                        add(resolved)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                })
+            }
+            logger.info("Found ${referencesToImport.size} unqualified references in ${psiFile.name} to import: ${referencesToImport.map { it.name }}")
+
+            val importList = psiFile.importList
+            logger.info("Import list of ${psiFile.name} (isNull=${importList == null}):\n'''\n${importList?.text ?: importList}\n'''")
+            val elementFactory = JavaPsiFacade.getElementFactory(project)
+
+            // importing references (namely, classes) into the considered PSI file BEFORE moving this file
+            for (reference in referencesToImport) {
+                val importStatement = elementFactory.createImportStatement(reference)
+
+                logger.info("Adding a new import into the import list of ${psiFile.name}: `${importStatement.text}` (for the qualified name: ${reference.qualifiedName})")
+
+                if (importList != null) {
+                    importList.add(importStatement)
+                    logger.info("  - Added import for `${reference.qualifiedName}`: ${importStatement.text}")
+                }
+            }
+
+
+            /*
             val movedPsiFile = WriteCommandAction.runWriteCommandAction<PsiJavaFile>(project) {
                 // Step 4: Move the file
                 logger.info("Moving file to new location...")
@@ -177,16 +225,10 @@ class MoveFileToAiSuggestedDirectoryTransformation(
                 movedPsiFile
             }
 
-            // TODO: wrap everything below with runBlocking?
-            println("Entering runBlocking and its smart mode read action...")
-            runBlocking {
-                // NonBlockingReadAction(...).inSmartMode() | com.intellij.openapi.application.smartReadAction
-                smartReadAction(project) {
-                    // Step 6: Fix imports in the moved file
-                    logger.info("Fixing imports in moved file...")
-                    fixImportsInMovedFile(movedPsiFile, oldPackageName)
-                }
-            }
+            // use com.intellij.openapi.application.smartReadAction / NonBlockingReadAction(...).inSmartMode()
+            // Step 6: Fix imports in the moved file
+            logger.info("Fixing imports in moved file...")
+            fixImportsInMovedFile(movedPsiFile, oldPackageName)
 
             // Step 7: Update imports in other files that reference moved classes
             logger.info("Updating imports in ${referencingFiles.size} referencing files...")
@@ -194,6 +236,7 @@ class MoveFileToAiSuggestedDirectoryTransformation(
                 updateImportsInReferencingFile(referencingFile, oldPackageName, newPackageName, publicClasses)
                 modifiedFilesCount += 1
             }
+            */
 
             TransformationResult.Success(
                 message = "Moved ${virtualFile.name} from package '$oldPackageName' to '$newPackageName'",
@@ -272,22 +315,22 @@ class MoveFileToAiSuggestedDirectoryTransformation(
         val elementFactory = JavaPsiFacade.getElementFactory(project)
 
         val referencesToFix: List<PsiClass> = buildList {
-            println("awaiting smart mode read action...")
             // Find all unqualified references in the moved file
             movedFile.accept(object : PsiRecursiveElementVisitor() {
                 override fun visitElement(element: PsiElement) {
                     super.visitElement(element)
                     if (element is PsiJavaCodeReferenceElement) {
-                        val resolved = element.resolve()
-                        if (resolved is PsiClass) {
+                        // val resolved = element.resolve()
+                        println("Considering reference: ${element.qualifiedName} with text (isPsiClass=${element is PsiClass}):\n'''\n${element.text}\n'''")
+                        if (element/*resolved*/ is PsiClass) {
                             // Check if this class is from the old package and not imported
-                            val resolvedFile = resolved.containingFile as? PsiJavaFile
+                            val resolvedFile = element/*resolved*/.containingFile as? PsiJavaFile
                             if (resolvedFile != null && resolvedFile.packageName == oldPackageName) {
                                 // Check if there's already an import for this class
-                                val qualifiedName = resolved.qualifiedName
+                                val qualifiedName = element/*resolved*/.qualifiedName
                                 if (qualifiedName != null && !hasImport(movedFile, qualifiedName)) {
                                     // add into the lists of references to fix
-                                    add(resolved)
+                                    add(element/*resolved*/)
                                 }
                             }
                         }
@@ -295,19 +338,23 @@ class MoveFileToAiSuggestedDirectoryTransformation(
                 }
             })
         }
+        logger.info("Found ${referencesToFix.size} unqualified references in moved file to fix: ${referencesToFix.map { it.name }}")
 
         // Add imports for all references that need fixing
-        println("fixing imports...")
-        WriteCommandAction.runWriteCommandAction<Unit>(project) {
-            val importList = movedFile.importList
-            for (classToImport in referencesToFix) {
-                val qualifiedName = classToImport.qualifiedName
-                if (qualifiedName != null && importList != null) {
-                    val importStatement = elementFactory.createImportStatement(classToImport)
-                    // TODO: need any update on VFS? is simply adding to the list enough?
-                    importList.add(importStatement)
-                    logger.info("  - Added import: $qualifiedName")
-                }
+        val importList = movedFile.importList
+        logger.info("Import list of ${movedFile.name}: isNull=${importList == null}")
+        logger.info("Import list of ${movedFile.name}: ${importList?.text ?: importList}")
+
+        for (classToImport in referencesToFix) {
+            val qualifiedName = classToImport.qualifiedName
+            // TODO: need any update on VFS? is simply adding to the list enough?
+            val importStatement = elementFactory.createImportStatement(classToImport)
+
+            logger.info("Adding a new import into the import list of ${movedFile.name}: `${importStatement.text}` ($qualifiedName)")
+
+            if (qualifiedName != null && importList != null) {
+                importList.add(importStatement)
+                logger.info("  - Added import: $qualifiedName")
             }
         }
     }
