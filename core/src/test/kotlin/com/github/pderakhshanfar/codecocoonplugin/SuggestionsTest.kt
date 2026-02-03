@@ -2,13 +2,21 @@ package com.github.pderakhshanfar.codecocoonplugin
 
 import com.github.pderakhshanfar.codecocoonplugin.suggestions.SuggestionsApi
 import kotlinx.coroutines.test.runTest
+import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable
 import kotlin.test.Test
 
+@EnabledIfEnvironmentVariable(
+    named = "OPENAI_API_KEY",
+    matches = ".*",
+    disabledReason = "OpenAI Token should be set as OPENAI_API_KEY to run the test suite",
+)
 class SuggestionsTest {
+    private val token = System.getenv("OPENAI_API_KEY")
+
     @Test
     fun test() = runTest {
         val suggestions = SuggestionsApi.suggestNewDirectory(
-            token = System.getenv("OPENAI_API_KEY"),
+            token = token,
             projectRoot = "/Users/vartiukhov/dev/projects/samples/ij-demo",
             filepath = "/Users/vartiukhov/dev/projects/samples/ij-demo/src/main/java/impl/others/library/A.java",
             content = {
