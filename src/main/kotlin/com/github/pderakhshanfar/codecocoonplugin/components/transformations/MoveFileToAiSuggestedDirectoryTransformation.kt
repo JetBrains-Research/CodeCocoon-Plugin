@@ -6,6 +6,8 @@ import com.github.pderakhshanfar.codecocoonplugin.executor.TransformationResult
 import com.github.pderakhshanfar.codecocoonplugin.intellij.logging.withStdout
 import com.github.pderakhshanfar.codecocoonplugin.suggestions.SuggestionsApi
 import com.github.pderakhshanfar.codecocoonplugin.transformation.requireOrDefault
+import com.intellij.openapi.application.smartReadAction
+import com.intellij.openapi.application.smartReadActionBlocking
 import com.intellij.openapi.command.WriteCommandAction
 import com.intellij.openapi.diagnostic.thisLogger
 import com.intellij.openapi.project.Project
@@ -102,7 +104,7 @@ class MoveFileToAiSuggestedDirectoryTransformation(
 
             // Find all files that reference these classes
             val referencingFiles = findReferencingFiles(project, publicClasses)
-            logger.info("Found ${referencingFiles.size} files referencing classes from this file")
+            logger.info("Found ${referencingFiles.size} files referencing classes from this file: ${referencingFiles.map { it.name }}")
 
             // Step 3: Calculate the target package name
             // In case when the suggestion API returns paths relative to the project root
@@ -156,9 +158,9 @@ class MoveFileToAiSuggestedDirectoryTransformation(
                 return TransformationResult.Failure("Invalid package name: $newPackageName")
             }
 
-            val modifiedFiles = mutableSetOf<PsiFile>()
+            var modifiedFilesCount = 0
 
-            WriteCommandAction.runWriteCommandAction(project) {
+            val movedPsiFile = WriteCommandAction.runWriteCommandAction<PsiJavaFile>(project) {
                 // Step 4: Move the file
                 logger.info("Moving file to new location...")
                 virtualFile.move(requestor, targetVirtualFile)
@@ -167,27 +169,35 @@ class MoveFileToAiSuggestedDirectoryTransformation(
                 val movedPsiFile = PsiManager.getInstance(project).findFile(virtualFile) as? PsiJavaFile
                     ?: throw IllegalStateException("Cannot find moved file")
 
-                modifiedFiles.add(movedPsiFile)
-
                 // Step 5: Update package statement
                 logger.info("Updating package statement to $newPackageName")
                 updatePackageStatement(movedPsiFile, newPackageName)
+                modifiedFilesCount += 1
 
-                // Step 6: Fix imports in the moved file
-                logger.info("Fixing imports in moved file...")
-                fixImportsInMovedFile(movedPsiFile, oldPackageName)
+                movedPsiFile
+            }
 
-                // Step 7: Update imports in other files that reference moved classes
-                logger.info("Updating imports in ${referencingFiles.size} referencing files...")
-                for (referencingFile in referencingFiles) {
-                    updateImportsInReferencingFile(referencingFile, oldPackageName, newPackageName, publicClasses)
-                    modifiedFiles.add(referencingFile)
+            // TODO: wrap everything below with runBlocking?
+            println("Entering runBlocking and its smart mode read action...")
+            runBlocking {
+                // NonBlockingReadAction(...).inSmartMode() | com.intellij.openapi.application.smartReadAction
+                smartReadAction(project) {
+                    // Step 6: Fix imports in the moved file
+                    logger.info("Fixing imports in moved file...")
+                    fixImportsInMovedFile(movedPsiFile, oldPackageName)
                 }
+            }
+
+            // Step 7: Update imports in other files that reference moved classes
+            logger.info("Updating imports in ${referencingFiles.size} referencing files...")
+            for (referencingFile in referencingFiles) {
+                updateImportsInReferencingFile(referencingFile, oldPackageName, newPackageName, publicClasses)
+                modifiedFilesCount += 1
             }
 
             TransformationResult.Success(
                 message = "Moved ${virtualFile.name} from package '$oldPackageName' to '$newPackageName'",
-                filesModified = modifiedFiles.size
+                filesModified = modifiedFilesCount
             )
         } catch (e: Exception) {
             logger.error("Failed to move file ${virtualFile.name}", e)
@@ -257,39 +267,47 @@ class MoveFileToAiSuggestedDirectoryTransformation(
      * that were previously accessible from the same package without imports.
      */
     private fun fixImportsInMovedFile(movedFile: PsiJavaFile, oldPackageName: String) {
-        val elementFactory = JavaPsiFacade.getElementFactory(movedFile.project)
-        val referencesToFix = mutableSetOf<PsiClass>()
+        // TODO: look at `movedFile.implicitlyImportedPackages`
+        val project = movedFile.project
+        val elementFactory = JavaPsiFacade.getElementFactory(project)
 
-        // Find all unqualified references in the moved file
-        movedFile.accept(object : PsiRecursiveElementVisitor() {
-            override fun visitElement(element: PsiElement) {
-                super.visitElement(element)
-                if (element is PsiJavaCodeReferenceElement) {
-                    val resolved = element.resolve()
-                    if (resolved is PsiClass) {
-                        // Check if this class is from the old package and not imported
-                        val resolvedFile = resolved.containingFile as? PsiJavaFile
-                        if (resolvedFile != null && resolvedFile.packageName == oldPackageName) {
-                            // Check if there's already an import for this class
-                            val qualifiedName = resolved.qualifiedName
-                            if (qualifiedName != null && !hasImport(movedFile, qualifiedName)) {
-                                referencesToFix.add(resolved)
+        val referencesToFix: List<PsiClass> = buildList {
+            println("awaiting smart mode read action...")
+            // Find all unqualified references in the moved file
+            movedFile.accept(object : PsiRecursiveElementVisitor() {
+                override fun visitElement(element: PsiElement) {
+                    super.visitElement(element)
+                    if (element is PsiJavaCodeReferenceElement) {
+                        val resolved = element.resolve()
+                        if (resolved is PsiClass) {
+                            // Check if this class is from the old package and not imported
+                            val resolvedFile = resolved.containingFile as? PsiJavaFile
+                            if (resolvedFile != null && resolvedFile.packageName == oldPackageName) {
+                                // Check if there's already an import for this class
+                                val qualifiedName = resolved.qualifiedName
+                                if (qualifiedName != null && !hasImport(movedFile, qualifiedName)) {
+                                    // add into the lists of references to fix
+                                    add(resolved)
+                                }
                             }
                         }
                     }
                 }
-            }
-        })
+            })
+        }
 
         // Add imports for all references that need fixing
-        val importList = movedFile.importList
-        for (classToImport in referencesToFix) {
-            val qualifiedName = classToImport.qualifiedName
-            if (qualifiedName != null && importList != null) {
-                val importStatement = elementFactory.createImportStatement(classToImport)
-                // TODO: need any update on VFS? is simply adding to the list enough?
-                importList.add(importStatement)
-                logger.info("  - Added import: $qualifiedName")
+        println("fixing imports...")
+        WriteCommandAction.runWriteCommandAction<Unit>(project) {
+            val importList = movedFile.importList
+            for (classToImport in referencesToFix) {
+                val qualifiedName = classToImport.qualifiedName
+                if (qualifiedName != null && importList != null) {
+                    val importStatement = elementFactory.createImportStatement(classToImport)
+                    // TODO: need any update on VFS? is simply adding to the list enough?
+                    importList.add(importStatement)
+                    logger.info("  - Added import: $qualifiedName")
+                }
             }
         }
     }
