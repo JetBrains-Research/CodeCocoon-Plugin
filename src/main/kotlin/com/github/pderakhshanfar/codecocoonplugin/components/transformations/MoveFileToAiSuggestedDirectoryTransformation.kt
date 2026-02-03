@@ -51,8 +51,8 @@ class MoveFileToAiSuggestedDirectoryTransformation(
 
     private val logger = thisLogger().withStdout()
 
-    // TODO: for now, concentrate only of Java
     override fun accepts(context: FileContext): Boolean {
+        // NOTE: accepting only Java files for now
         return context.language == Language.JAVA
     }
 
@@ -63,21 +63,19 @@ class MoveFileToAiSuggestedDirectoryTransformation(
         val project = psiFile.project
         val requestor = this
 
-        // Validate that this is a Java file
+        // validate that this is a Java file
         if (psiFile !is PsiJavaFile) {
             return TransformationResult.Failure("File ${virtualFile.name} is not a Java file")
         }
 
         return try {
-            // Step 2: Collect pre-move information
-            val oldPackageName = psiFile.packageName
-            val fileIndex = ProjectFileIndex.getInstance(project)
-            logger.info("Original package: $oldPackageName")
+            val projectRoot = project.basePath
+                ?: return TransformationResult.Failure("Cannot determine project base path")
 
-
-
-            // Step 1: Get AI directory suggestion
-            logger.info("Requesting AI directory suggestion for ${virtualFile.path}")
+            /**
+             * STEP 0: Generate AI Directory Suggestions and Create a Select New Package
+             */
+            logger.info("STEP 0: Generate AI Directory Suggestions and Create a Select New Package")
             val suggestedDirectories = runBlocking {
                 SuggestionsApi.suggestNewDirectory(
                     token = System.getenv("OPENAI_API_KEY"),
@@ -88,12 +86,10 @@ class MoveFileToAiSuggestedDirectoryTransformation(
                     existingOnly = existingOnly
                 )
             }
-
             if (suggestedDirectories.isEmpty()) {
                 return TransformationResult.Failure("No directory suggestions received from AI")
             }
 
-            val projectRoot = project.basePath ?: return TransformationResult.Failure("Cannot determine project base path")
             val result = findSuitableDestinationDirectory(
                 project = project,
                 projectRoot = projectRoot,
@@ -105,69 +101,10 @@ class MoveFileToAiSuggestedDirectoryTransformation(
                 else -> return TransformationResult.Failure(result.exceptionOrNull()?.message ?: "Unknown error")
             }
 
-            /*
-            // TODO: traverse through the suggestions and peek the first applicable?
-            val targetDirectoryPath = suggestedDirectories.first()
-            logger.info("Selected target directory: $targetDirectoryPath")
+            val oldPackageName = psiFile.packageName
+            logger.info("Package change for file ${virtualFile.path}: $oldPackageName -> $newPackageName")
 
-
-            // Step 3: Calculate the target package name
-            // In case when the suggestion API returns paths relative to the project root
-            val projectBasePath = project.basePath
-                ?: return TransformationResult.Failure("Cannot determine project base path")
-            val absoluteTargetPath = when {
-                targetDirectoryPath.toPath().isAbsolute -> targetDirectoryPath
-                else -> File(projectBasePath, targetDirectoryPath).canonicalPath
-            }
-
-            logger.info("Resolved absolute target path: $absoluteTargetPath")
-
-            // Verify the target directory is under a source root
-            val targetFile = File(absoluteTargetPath)
-
-            // Create a directory structure if it doesn't exist, then get VirtualFile
-            // TODO: use `VfsUtil.createDirectories`
-            Files.createDirectories(targetFile.toPath())
-            val targetVirtualFile = VfsUtil.findFileByIoFile(targetFile, /* refreshIfNeeded = */ true)
-                ?: return TransformationResult.Failure("Cannot find virtual file for target: $absoluteTargetPath")
-
-            val targetSourceRoot = fileIndex.getSourceRootForFile(targetVirtualFile)
-                    ?: return TransformationResult.Failure(
-                        "Target directory $targetDirectoryPath is not under any source root in the project")
-
-            // Calculate new package name relative to source root
-            val newPackageName = run {
-                val targetSourceRootPath = File(targetSourceRoot.path)
-                when {
-                    targetFile.startsWith(targetSourceRootPath) -> {
-                        val relativePath = targetFile.relativeTo(targetSourceRootPath).path
-                        if (relativePath.isEmpty()) "" else relativePath.replace(File.separatorChar, '.')
-                    }
-                    else -> null
-                }
-            }
-
-            if (newPackageName == null) {
-                return TransformationResult.Failure(
-                    "Target directory $absoluteTargetPath is not under source root ${targetSourceRoot.path}")
-            } else if (newPackageName == oldPackageName) {
-                // TODO: iterate through the suggested file locations
-                return TransformationResult.Skipped(
-                    "The new package equals to the original one: $newPackageName. " +
-                        "The suggested directory would remain unchanged: $absoluteTargetPath")
-            }
-
-            // Validate package name
-            if (!isValidPackageName(newPackageName)) {
-                return TransformationResult.Failure("Invalid package name: $newPackageName")
-            }
-             */
-
-            logger.info("New package will be: $newPackageName")
-
-            // TODO: modify the changed files count
             var modifiedFilesCount = 0
-
             WriteCommandAction.runWriteCommandAction<Unit>(project) {
                 /**
                  * STEP 1: Import Class From The Same Package
@@ -188,35 +125,35 @@ class MoveFileToAiSuggestedDirectoryTransformation(
                  * we collect all files that reference the symbols to update or add
                  * imports AFTER the move.
                  */
-                // collect public classes/interfaces that will need import updates in other files
                 logger.info("STEP 2: Collect Symbols Referenced In Other Files Before Move")
+                // collect public classes/interfaces that will need import updates in other files
+                // and find all files that reference these classes.
                 val publicClasses: List<PsiClass> = psiFile.collectPublicClasses()
-                val publicQualifiedNames = publicClasses.mapNotNull { it.qualifiedName }.toSet()
-                logger.info("Found ${publicClasses.size} public classes of `${psiFile.name}` file: ${publicClasses.map { it.name }} -> corresponding qualified names ${publicQualifiedNames.toList()} (their imports in other files will be updated with a new package $newPackageName)")
-
-                // Find all files that reference these classes. We intentionally collect referencing
-                // files before the file is moved. Otherwise, the references become corrupted.
                 val referencingFilesToClasses: Map<PsiJavaFile, Set<PsiClass>> = publicClasses.findReferencingFiles(project)
-                logger.info("References from the `${psiFile.name}` file: ${referencingFilesToClasses.map { (key, value) -> "${key.name} -> ${value.map { it.name }}" }}")
 
+                logger.info("${psiFile.name} contains ${publicClasses.size} public classes: ${publicClasses.map { it.qualifiedName }}")
+                logger.info("${referencingFilesToClasses.size} files reference classes from ${psiFile.name}: ${referencingFilesToClasses.map { (file, refs) -> "${file.name} -> ${refs.map { it.qualifiedName }}" }}")
 
                 /**
                  * STEP 3: Move the File and Update its Package
                  */
                 logger.info("STEP 3: Move the File and Update its Package")
-                virtualFile.moveAndUpdatePackage(
+                val result = virtualFile.moveAndUpdatePackage(
                     project = project,
                     requestor = requestor,
                     where = destinationDirectory,
                     packageName = newPackageName,
                 )
+                if (result.isFailure) {
+                    val err = result.exceptionOrNull() ?: TransformationStepFailed(
+                        "Failed to move file ${virtualFile.name} or update its package to $newPackageName")
+                    throw err
+                }
                 // we change the package within the moved file
                 modifiedFilesCount += 1
 
                 /**
                  * STEP 4: Update Imports In Referencing Files
-                 *
-                 * Rationale: see the explanations of step 2.
                  */
                 logger.info("STEP 4: Update Imports In Referencing Files")
                 for ((referencingFile, referencedClasses) in referencingFilesToClasses) {
@@ -238,7 +175,7 @@ class MoveFileToAiSuggestedDirectoryTransformation(
             )
         } catch (e: Exception) {
             logger.error("Failed to move file ${virtualFile.name}", e)
-            TransformationResult.Failure("Failed to move file ${virtualFile.name}: ${e.message}", e)
+            TransformationResult.Failure("Failed to move file ${virtualFile.path}: ${e.message}", e)
         }
     }
 
@@ -424,7 +361,7 @@ class MoveFileToAiSuggestedDirectoryTransformation(
                             if (resolvedFile != null && resolvedFile.packageName == fromPackage) {
                                 // Check if there's already an import for this class
                                 val qualifiedName = resolved.qualifiedName
-                                if (qualifiedName != null && !hasImport(psiFile, qualifiedName)) {
+                                if (qualifiedName != null && !psiFile.imports(qualifiedName)) {
                                     // add into the lists of references to import in the considered PSI file
                                     add(resolved)
                                 }
@@ -457,21 +394,20 @@ class MoveFileToAiSuggestedDirectoryTransformation(
         requestor: Any,
         where: VirtualFile,
         packageName: String
-    ): PsiJavaFile {
+    ): Result<PsiJavaFile> {
+        // moving the file
         val fileToMove = this
-        logger.info("Moving file to new location...")
         fileToMove.move(requestor, where)
 
         // refresh and get updated PSI
         val movedPsiFile = PsiManager.getInstance(project).findFile(fileToMove) as? PsiJavaFile
-            ?: throw IllegalStateException("Cannot find moved file ${fileToMove.path}")
-        // TODO: don't throw, use Result ^ & project exception
+            ?: return Result.failure(
+                TransformationStepFailed("Cannot find moved file ${fileToMove.path}"))
 
-        // update package statement
-        logger.info("Updating package statement to $packageName")
+        // updating package statement
         movedPsiFile.updatePackageStatement(packageName)
 
-        return movedPsiFile
+        return Result.success(movedPsiFile)
     }
 
     /**
@@ -529,8 +465,8 @@ class MoveFileToAiSuggestedDirectoryTransformation(
     /**
      * Checks if the given file has an import for the specified qualified name.
      */
-    private fun hasImport(javaFile: PsiJavaFile, qualifiedName: String): Boolean {
-        val importList = javaFile.importList ?: return false
+    private fun PsiJavaFile.imports(qualifiedName: String): Boolean {
+        val importList = this.importList ?: return false
         for (importStatement in importList.importStatements) {
             if (importStatement.qualifiedName == qualifiedName) {
                 return true
@@ -542,8 +478,12 @@ class MoveFileToAiSuggestedDirectoryTransformation(
     /**
      * Validates that the package name is a valid Java identifier.
      */
-    private fun isValidPackageName(packageName: String): Boolean {
-        if (packageName.isEmpty()) return true // default package
+    private fun String.isValidPackageName(): Boolean {
+        // default package
+        val packageName = this
+        if (packageName.isEmpty()) {
+            return true
+        }
         return packageName.split('.').all { part ->
             part.isNotEmpty() && part[0].isJavaIdentifierStart() && part.all { it.isJavaIdentifierPart() }
         }
