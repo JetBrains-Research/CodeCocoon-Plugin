@@ -16,6 +16,7 @@ import com.intellij.psi.*
 import com.intellij.psi.search.GlobalSearchScope
 import com.intellij.psi.search.searches.ReferencesSearch
 import kotlinx.coroutines.runBlocking
+import okio.Path.Companion.toPath
 import java.io.File
 import java.nio.file.Files
 
@@ -103,11 +104,14 @@ class MoveFileToAiSuggestedDirectoryTransformation(
             val referencingFiles = findReferencingFiles(project, publicClasses)
             logger.info("Found ${referencingFiles.size} files referencing classes from this file")
 
-            // Step 3: Calculate target package name
-            // The suggestion API returns paths relative to the project root
+            // Step 3: Calculate the target package name
+            // In case when the suggestion API returns paths relative to the project root
             val projectBasePath = project.basePath
                 ?: return TransformationResult.Failure("Cannot determine project base path")
-            val absoluteTargetPath = File(projectBasePath, targetDirectoryPath).canonicalPath
+            val absoluteTargetPath = when {
+                targetDirectoryPath.toPath().isAbsolute -> targetDirectoryPath
+                else -> File(projectBasePath, targetDirectoryPath).canonicalPath
+            }
 
             logger.info("Resolved absolute target path: $absoluteTargetPath")
 
