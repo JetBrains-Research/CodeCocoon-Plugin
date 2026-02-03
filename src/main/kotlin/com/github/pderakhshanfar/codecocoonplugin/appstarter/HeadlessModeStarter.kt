@@ -4,6 +4,7 @@ import com.github.pderakhshanfar.codecocoonplugin.components.transformations.Add
 import com.github.pderakhshanfar.codecocoonplugin.components.transformations.RenameClassTransformation
 import com.github.pderakhshanfar.codecocoonplugin.components.transformations.RenameMethodTransformation
 import com.github.pderakhshanfar.codecocoonplugin.components.transformations.RenameVariableTransformation
+import com.github.pderakhshanfar.codecocoonplugin.components.transformations.MoveFileToAiSuggestedDirectoryTransformation
 import com.github.pderakhshanfar.codecocoonplugin.components.transformations.MoveFileToNewDirectoryTransformation
 import com.github.pderakhshanfar.codecocoonplugin.components.transformations.TransformationRegistry
 import com.github.pderakhshanfar.codecocoonplugin.config.CodeCocoonConfig
@@ -142,6 +143,9 @@ class HeadlessModeStarter : ApplicationStarter {
         TransformationRegistry.register(RenameClassTransformation.ID) { config -> RenameClassTransformation(config) }
         TransformationRegistry.register(RenameVariableTransformation.ID) { config -> RenameVariableTransformation(config) }
         TransformationRegistry.register(MoveFileToNewDirectoryTransformation.ID) { config -> MoveFileToNewDirectoryTransformation(config) }
+        TransformationRegistry.register(MoveFileToAiSuggestedDirectoryTransformation.ID) { config ->
+            MoveFileToAiSuggestedDirectoryTransformation(config)
+        }
     }
 
     /**
