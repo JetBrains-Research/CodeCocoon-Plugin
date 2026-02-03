@@ -168,19 +168,22 @@ class MoveFileToAiSuggestedDirectoryTransformation(
             var modifiedFilesCount = 0
             val elementFactory = JavaPsiFacade.getElementFactory(project)
 
-
-
             WriteCommandAction.runWriteCommandAction<Unit>(project) {
-                // add imports to the to-be-moved file that will be missing after the move operation
+                // import referenced classes from the same package BEFORE moving this file,
+                // as these imports will be required AFTER moving the file.
+                psiFile.importClassesFromPackage(oldPackageName)
+
+                /*
+                // add imports of components within the same package to the file being moved
+                // that will be missing after the move operation
                 val referencesToImport: List<PsiClass> = buildList {
                     psiFile.accept(object : PsiRecursiveElementVisitor() {
                         override fun visitElement(element: PsiElement) {
                             super.visitElement(element)
                             if (element is PsiJavaCodeReferenceElement) {
-                                // or element.getElement()?
                                 val resolved = element.resolve()
 
-                                println("Considering resolved instance of element ${element.qualifiedName} (isResolvedNull=${resolved == null}, isResolvedPsiClass=${resolved is PsiClass}) with text:\n'''\n${resolved?.text?.take(200)}\n'''")
+                                logger.info("Considering resolved instance of element ${element.qualifiedName} (isResolvedNull=${resolved == null}, isResolvedPsiClass=${resolved is PsiClass}) with text:\n'''\n${resolved?.text?.take(200)}\n'''")
 
                                 if (resolved is PsiClass) {
                                     // Check if this class is from the old package and not imported
@@ -214,6 +217,7 @@ class MoveFileToAiSuggestedDirectoryTransformation(
                         logger.info("  - Added import for `${reference.qualifiedName}`: ${importStatement.text}")
                     }
                 }
+                 */
             }
 
 
@@ -433,6 +437,58 @@ class MoveFileToAiSuggestedDirectoryTransformation(
     }
 
     /**
+     * TODO: descr
+     */
+    private fun PsiJavaFile.importClassesFromPackage(fromPackage: String) {
+        val psiFile = this
+        val elementFactory = JavaPsiFacade.getElementFactory(psiFile.project)
+
+        // add imports of components within the same package to the file being moved
+        // that will be missing after the move operation
+        val referencesToImport: List<PsiClass> = buildList {
+            psiFile.accept(object : PsiRecursiveElementVisitor() {
+                override fun visitElement(element: PsiElement) {
+                    super.visitElement(element)
+                    if (element is PsiJavaCodeReferenceElement) {
+                        val resolved = element.resolve()
+
+                        logger.info("Considering resolved instance of element ${element.qualifiedName} (isResolvedNull=${resolved == null}, isResolvedPsiClass=${resolved is PsiClass}) with text:\n'''\n${resolved?.text?.take(200)}\n'''")
+
+                        if (resolved is PsiClass) {
+                            // Check if this class is from the old package and not imported
+                            val resolvedFile = resolved.containingFile as? PsiJavaFile
+                            if (resolvedFile != null && resolvedFile.packageName == fromPackage) {
+                                // Check if there's already an import for this class
+                                val qualifiedName = resolved.qualifiedName
+                                if (qualifiedName != null && !hasImport(psiFile, qualifiedName)) {
+                                    // add into the lists of references to import in the considered PSI file
+                                    add(resolved)
+                                }
+                            }
+                        }
+                    }
+                }
+            })
+        }
+        logger.info("Found ${referencesToImport.size} unqualified references in ${psiFile.name} to import: ${referencesToImport.map { it.name }}")
+
+        val importList = psiFile.importList
+        logger.info("Import list of ${psiFile.name} (isNull=${importList == null}):\n'''\n${importList?.text ?: importList}\n'''")
+
+        // importing references (namely, classes) into the considered PSI file BEFORE moving this file
+        for (reference in referencesToImport) {
+            val importStatement = elementFactory.createImportStatement(reference)
+
+            logger.info("Adding a new import into the import list of ${psiFile.name}: `${importStatement.text}` (for the qualified name: ${reference.qualifiedName})")
+
+            if (importList != null) {
+                importList.add(importStatement)
+                logger.info("  - Added import for `${reference.qualifiedName}`: ${importStatement.text}")
+            }
+        }
+    }
+
+    /**
      * Checks if the given file has an import for the specified qualified name.
      */
     private fun hasImport(javaFile: PsiJavaFile, qualifiedName: String): Boolean {
@@ -459,3 +515,4 @@ class MoveFileToAiSuggestedDirectoryTransformation(
         const val ID = "move-file-to-ai-suggested-directory-transformation"
     }
 }
+
