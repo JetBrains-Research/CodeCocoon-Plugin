@@ -167,53 +167,74 @@ class MoveFileToAiSuggestedDirectoryTransformation(
 
             // TODO: modify the changed files count
             var modifiedFilesCount = 0
-            val elementFactory = JavaPsiFacade.getElementFactory(project)
 
             WriteCommandAction.runWriteCommandAction<Unit>(project) {
-                // import referenced classes from the same package BEFORE moving this file,
-                // as these imports will be required AFTER moving the file.
+                /**
+                 * STEP 1: Import Class From The Same Package
+                 *
+                 * Rationale:
+                 * Import referenced classes from the same package BEFORE moving this file,
+                 * as these imports will be required AFTER moving the file.
+                 */
+                logger.info("STEP 1: Import Class From The Same Package")
                 psiFile.importClassesFromPackage(oldPackageName)
-            }
+
+                /**
+                 * STEP 2: Collect Symbols Referenced In Other Files Before Move
+                 *
+                 * Rationale:
+                 * The package of the following collected symbols will be updated.
+                 * Therefore, BEFORE moving the file and updating its package,
+                 * we collect all files that reference the symbols to update or add
+                 * imports AFTER the move.
+                 */
+                // collect public classes/interfaces that will need import updates in other files
+                logger.info("STEP 2: Collect Symbols Referenced In Other Files Before Move")
+                val publicClasses: List<PsiClass> = psiFile.collectPublicClasses()
+                val publicQualifiedNames = publicClasses.mapNotNull { it.qualifiedName }.toSet()
+                logger.info("Found ${publicClasses.size} public classes of `${psiFile.name}` file: ${publicClasses.map { it.name }} -> corresponding qualified names ${publicQualifiedNames.toList()} (their imports in other files will be updated with a new package $newPackageName)")
+
+                // Find all files that reference these classes. We intentionally collect referencing
+                // files before the file is moved. Otherwise, the references become corrupted.
+                val referencingFilesToClasses: Map<PsiJavaFile, Set<PsiClass>> = publicClasses.findReferencingFiles(project)
+                logger.info("References from the `${psiFile.name}` file: ${referencingFilesToClasses.map { (key, value) -> "${key.name} -> ${value.map { it.name }}" }}")
 
 
-            // collect public classes/interfaces that will need import updates in other files
-            val publicClasses: List<PsiClass> = psiFile.collectPublicClasses()
-            val publicQualifiedNames = publicClasses.mapNotNull { it.qualifiedName }.toSet()
-            logger.info("Found ${publicClasses.size} public classes of `${psiFile.name}` file: ${publicClasses.map { it.name }} -> corresponding qualified names ${publicQualifiedNames.toList()} (their imports in other files will be updated with a new package $newPackageName)")
-
-            // Find all files that reference these classes. We intentionally collect referencing
-            // files before the file is moved. Otherwise, the references become corrupted.
-            val referencingFilesToClasses: Map<PsiJavaFile, Set<PsiClass>> = publicClasses.findReferencingFiles(project)
-            logger.info("References from the `${psiFile.name}` file: ${referencingFilesToClasses.map { (key, value) -> "${key.name} -> ${value.map { it.name }}" }}")
-
-
-            // ==== Moving the file into the new directory ==== //
-            WriteCommandAction.runWriteCommandAction<Unit>(project) {
-                logger.info("Moving the file into a target directory...")
+                /**
+                 * STEP 3: Move the File and Update its Package
+                 */
+                logger.info("STEP 3: Move the File and Update its Package")
                 virtualFile.moveAndUpdatePackage(
                     project = project,
                     requestor = requestor,
                     where = destinationDirectory,
                     packageName = newPackageName,
                 )
-            }
+                // we change the package within the moved file
+                modifiedFilesCount += 1
 
-            // TODO: unit all three stages under a single write command action.
-            WriteCommandAction.runWriteCommandAction<Unit>(project) {
-                logger.info("Updating imports in referencing files...")
+                /**
+                 * STEP 4: Update Imports In Referencing Files
+                 *
+                 * Rationale: see the explanations of step 2.
+                 */
+                logger.info("STEP 4: Update Imports In Referencing Files")
                 for ((referencingFile, referencedClasses) in referencingFilesToClasses) {
                     // update or add imports of the moved classes in the referencing files
                     // IMPORTANT: this step MUST be done AFTER the file is moved and its package is updated
-                    referencingFile.updateImportsOfMovedReferencedClasses(
+                    val fileModified = referencingFile.updateImportsOfMovedReferencedClasses(
                         referencedClasses,
                         oldPackageName,
                     )
+                    if (fileModified) {
+                        modifiedFilesCount += 1
+                    }
                 }
             }
 
             TransformationResult.Success(
                 message = "Moved ${virtualFile.name} from package '$oldPackageName' to '$newPackageName'",
-                filesModified = modifiedFilesCount
+                filesModified = modifiedFilesCount,
             )
         } catch (e: Exception) {
             logger.error("Failed to move file ${virtualFile.name}", e)
@@ -380,6 +401,7 @@ class MoveFileToAiSuggestedDirectoryTransformation(
 
     /**
      * TODO: descr
+     *
      */
     private fun PsiJavaFile.importClassesFromPackage(fromPackage: String) {
         val psiFile = this
@@ -452,17 +474,30 @@ class MoveFileToAiSuggestedDirectoryTransformation(
         return movedPsiFile
     }
 
+    /**
+     * Updates the import statements in the current Java file for a set of referenced classes
+     * that have been moved to a different package. This method ensures that the imports
+     * are updated or added based on whether the referenced classes are from a different package
+     * or the same package as the current file.
+     *
+     * @param referencedClasses A set of `PsiClass` instances representing the classes that
+     *                          need to have their import statements updated in the current file.
+     * @param oldPackageName The previous package name of the referenced classes, which is used
+     *                       to determine if the current file was in the same package as the moved classes.
+     * @return `true` if the file was modified, false otherwise.
+     */
     private fun PsiJavaFile.updateImportsOfMovedReferencedClasses(
         referencedClasses: Set<PsiClass>,
         oldPackageName: String,
-    ) {
+    ): Boolean {
         // The referencing file can be either:
         //   1. From a different package -> update its import of the referenced class
         //   2. Within the same package, hence, it may not have an import of the referenced class -> add a new import
         val referencingFile = this
         val elementFactory = JavaPsiFacade.getElementFactory(project)
-        val importList = referencingFile.importList ?: return
+        val importList = referencingFile.importList ?: return false
 
+        var fileModified = false
         for (reference in referencedClasses) {
             val newImportStatement = elementFactory.createImportStatement(reference)
             logger.info("Considered reference `${reference.qualifiedName}` (contained by `${reference.containingFile}` file) referenced in `${referencingFile.name}`:")
@@ -475,16 +510,20 @@ class MoveFileToAiSuggestedDirectoryTransformation(
                     // update this import statement with the new package prefix
                     logger.info("Replacing import in `${referencingFile.name}` `${oldImportStatement.text}` -> `${newImportStatement.text}`")
                     oldImportStatement.replace(newImportStatement)
+                    fileModified = true
                 }
                 referencingFile.packageName == oldPackageName -> {
                     // otherwise, if a referencing file was within the same package
                     // as the moved file, add a new import statement
                     logger.info("Adding a new import into the import list of `${referencingFile.name}`: `${newImportStatement.text}` (for the qualified name: ${reference.qualifiedName})")
                     importList.add(newImportStatement)
+                    fileModified = true
                 }
                 else -> logger.error("Cannot find/add import statement for `${reference.qualifiedName}` in `${referencingFile.virtualFile.path}`. The transformation may be incorrect.")
             }
         }
+
+        return fileModified
     }
 
     /**
