@@ -151,113 +151,71 @@ class MoveFileToAiSuggestedDirectoryTransformation(
             logger.info("New package will be: $newPackageName")
 
             var modifiedFilesCount = 0
+            val elementFactory = JavaPsiFacade.getElementFactory(project)
 
 
 
+            WriteCommandAction.runWriteCommandAction<Unit>(project) {
+                // add imports to the to-be-moved file that will be missing after the move operation
+                val referencesToImport: List<PsiClass> = buildList {
+                    psiFile.accept(object : PsiRecursiveElementVisitor() {
+                        override fun visitElement(element: PsiElement) {
+                            super.visitElement(element)
+                            if (element is PsiJavaCodeReferenceElement) {
+                                // or element.getElement()?
+                                val resolved = element.resolve()
 
-            // add imports to the to-be-moved file that will be missing after the move operation
-            val referencesToImport: List<PsiClass> = buildList {
-                psiFile.accept(object : PsiRecursiveElementVisitor() {
-                    override fun visitElement(element: PsiElement) {
-                        super.visitElement(element)
-                        if (element is PsiJavaCodeReferenceElement) {
-                            // or element.getElement()?
-                            val resolved = element.resolve()
+                                println("Considering resolved instance of element ${element.qualifiedName} (isResolvedNull=${resolved == null}, isResolvedPsiClass=${resolved is PsiClass}) with text:\n'''\n${resolved?.text?.take(200)}\n'''")
 
-                            println("Considering resolved instance of element ${element.qualifiedName} (isResolvedNull=${resolved == null}, isResolvedPsiClass=${resolved is PsiClass}) with text:\n'''\n${resolved?.text?.take(200)}\n'''")
-
-                            if (resolved is PsiClass) {
-                                // Check if this class is from the old package and not imported
-                                val resolvedFile = resolved.containingFile as? PsiJavaFile
-                                if (resolvedFile != null && resolvedFile.packageName == oldPackageName) {
-                                    // Check if there's already an import for this class
-                                    val qualifiedName = resolved.qualifiedName
-                                    if (qualifiedName != null && !hasImport(psiFile, qualifiedName)) {
-                                        // add into the lists of references to import in the considered PSI file
-                                        add(resolved)
+                                if (resolved is PsiClass) {
+                                    // Check if this class is from the old package and not imported
+                                    val resolvedFile = resolved.containingFile as? PsiJavaFile
+                                    if (resolvedFile != null && resolvedFile.packageName == oldPackageName) {
+                                        // Check if there's already an import for this class
+                                        val qualifiedName = resolved.qualifiedName
+                                        if (qualifiedName != null && !hasImport(psiFile, qualifiedName)) {
+                                            // add into the lists of references to import in the considered PSI file
+                                            add(resolved)
+                                        }
                                     }
                                 }
                             }
                         }
+                    })
+                }
+                logger.info("Found ${referencesToImport.size} unqualified references in ${psiFile.name} to import: ${referencesToImport.map { it.name }}")
+
+                val importList = psiFile.importList
+                logger.info("Import list of ${psiFile.name} (isNull=${importList == null}):\n'''\n${importList?.text ?: importList}\n'''")
+
+                // importing references (namely, classes) into the considered PSI file BEFORE moving this file
+                for (reference in referencesToImport) {
+                    val importStatement = elementFactory.createImportStatement(reference)
+
+                    logger.info("Adding a new import into the import list of ${psiFile.name}: `${importStatement.text}` (for the qualified name: ${reference.qualifiedName})")
+
+                    if (importList != null) {
+                        importList.add(importStatement)
+                        logger.info("  - Added import for `${reference.qualifiedName}`: ${importStatement.text}")
                     }
-                })
-            }
-            logger.info("Found ${referencesToImport.size} unqualified references in ${psiFile.name} to import: ${referencesToImport.map { it.name }}")
-
-            val importList = psiFile.importList
-            logger.info("Import list of ${psiFile.name} (isNull=${importList == null}):\n'''\n${importList?.text ?: importList}\n'''")
-            val elementFactory = JavaPsiFacade.getElementFactory(project)
-
-            // importing references (namely, classes) into the considered PSI file BEFORE moving this file
-            for (reference in referencesToImport) {
-                val importStatement = elementFactory.createImportStatement(reference)
-
-                logger.info("Adding a new import into the import list of ${psiFile.name}: `${importStatement.text}` (for the qualified name: ${reference.qualifiedName})")
-
-                if (importList != null) {
-                    importList.add(importStatement)
-                    logger.info("  - Added import for `${reference.qualifiedName}`: ${importStatement.text}")
                 }
             }
 
 
-
-            // ==== Update imports in other files that reference classes to be moved ==== //
-
-            // Collect public classes/interfaces that will need import updates in other files
+            // collect public classes/interfaces that will need import updates in other files
             val publicClasses: List<PsiClass> = collectPublicClasses(psiFile)
             val publicQualifiedNames = publicClasses.mapNotNull { it.qualifiedName }.toSet()
             logger.info("Found ${publicClasses.size} public classes of `${psiFile.name}` file: ${publicClasses.map { it.name }} -> corresponding qualified names ${publicQualifiedNames.toList()} (their imports in other files will be updated with a new package $newPackageName)")
 
-            // Find all files that reference these classes
+            // Find all files that reference these classes. We intentionally collect referencing
+            // files before the file is moved. Otherwise, the references become corrupted.
             val referencedClassesInFiles: Map<PsiJavaFile, Set<PsiClass>> = findReferencingFiles(project, publicClasses)
             logger.info("References from the `${psiFile.name}` file: ${referencedClassesInFiles.map { (key, value) -> "${key.name} -> ${value.map { it.name }}" }}")
 
-            logger.info("Updating imports in referencing files...")
-
-            // the following importStatements right now import the
-            // symbols from the to-be-moved file as is (i.e., without the new package prefix).
-            // we collect them now to update with a new package prefix later after the file is moved.
-            /*val importsOfReferencedSymbols: List<PsiImportStatement> = buildList {
-                for ((referencingFile, referencedClasses) in referencedClassesInFiles) {
-                    // a referencing file can be either:
-                    //   1. From a different package -> update its import of the referenced class
-                    //   2. Within the same package, hence, it may not have an import of the referenced class -> add a new import
-                    val importList = referencingFile.importList ?: continue
-
-                    for (reference in referencedClasses) {
-                        // TODO: need a new imported name (no use of !!):
-                        // val newImportedName = reference.qualifiedName!!.replaceFirst(oldPackageName, newPackageName)
-                        //val newImportStatement = elementFactory.createImportStatementOnDemand(newImportedName)
-                        val newImportStatement = elementFactory.createImportStatement(reference)
-
-                        // search for the import statement that corresponds to the referenced class
-                        val oldImportStatement = importList.importStatements.find { it.qualifiedName == reference.qualifiedName }
-
-                        when {
-                            oldImportStatement != null -> {
-                                // update this import statement with the new package prefix
-                                logger.info("Replacing import in `${referencingFile.name}` `${oldImportStatement.text}` -> `${newImportStatement.text}`")
-                                oldImportStatement.replace(newImportStatement)
-                            }
-                            referencingFile.packageName == oldPackageName -> {
-                                // otherwise, if a referencing file is within the same package
-                                // as the file to be moved, add a new import statement
-                                logger.info("Adding a new import into the import list of `${referencingFile.name}`: `${newImportStatement.text}` (for the qualified name: ${reference.qualifiedName})")
-                                importList.add(newImportStatement)
-                            }
-                        }
-
-                        // add the new import statement into the list
-                        add(newImportStatement)
-                    }
-                }
-            }*/
-
-            // TODO: use write command action for above modifications ^
 
             // ==== Moving the file into the new directory ==== //
-            val movedPsiFile = WriteCommandAction.runWriteCommandAction<PsiJavaFile>(project) {
+            logger.info("Moving the file into a target directory...")
+            WriteCommandAction.runWriteCommandAction<Unit>(project) {
                 // move the file
                 logger.info("Moving file to new location...")
                 virtualFile.move(requestor, targetVirtualFile)
@@ -269,40 +227,44 @@ class MoveFileToAiSuggestedDirectoryTransformation(
                 // update package statement
                 logger.info("Updating package statement to $newPackageName")
                 updatePackageStatement(movedPsiFile, newPackageName)
-
-                movedPsiFile
             }
 
+            // TODO: move into methods all three stages.
+            // TODO: unit all three stages under a single write command action.
             // add/update symbol imports in referencing files
-            for ((referencingFile, referencedClasses) in referencedClassesInFiles) {
-                // a referencing file can be either:
-                //   1. From a different package -> update its import of the referenced class
-                //   2. Within the same package, hence, it may not have an import of the referenced class -> add a new import
-                val importList = referencingFile.importList ?: continue
+            WriteCommandAction.runWriteCommandAction<Unit>(project) {
+                logger.info("Updating imports in referencing files...")
+                for ((referencingFile, referencedClasses) in referencedClassesInFiles) {
+                    // a referencing file can be either:
+                    //   1. From a different package -> update its import of the referenced class
+                    //   2. Within the same package, hence, it may not have an import of the referenced class -> add a new import
+                    val importList = referencingFile.importList ?: continue
 
-                for (reference in referencedClasses) {
-                    val newImportStatement = elementFactory.createImportStatement(reference)
-                    logger.info("Considered reference `${reference.qualifiedName}` (contained by `${reference.containingFile}` file) referenced in `${referencingFile.name}`:")
+                    for (reference in referencedClasses) {
+                        val newImportStatement = elementFactory.createImportStatement(reference)
+                        logger.info("Considered reference `${reference.qualifiedName}` (contained by `${reference.containingFile}` file) referenced in `${referencingFile.name}`:")
 
-                    // search for the import statement that corresponds to the referenced class
-                    val oldImportStatement = importList.importStatements.find { it.qualifiedName == reference.qualifiedName }
+                        // search for the import statement that corresponds to the referenced class
+                        val oldImportStatement = importList.importStatements.find { it.qualifiedName == reference.qualifiedName }
 
-                    when {
-                        oldImportStatement != null -> {
-                            // update this import statement with the new package prefix
-                            logger.info("Replacing import in `${referencingFile.name}` `${oldImportStatement.text}` -> `${newImportStatement.text}`")
-                            oldImportStatement.replace(newImportStatement)
+                        when {
+                            oldImportStatement != null -> {
+                                // update this import statement with the new package prefix
+                                logger.info("Replacing import in `${referencingFile.name}` `${oldImportStatement.text}` -> `${newImportStatement.text}`")
+                                oldImportStatement.replace(newImportStatement)
+                            }
+                            referencingFile.packageName == oldPackageName -> {
+                                // otherwise, if a referencing file was within the same package
+                                // as the moved file, add a new import statement
+                                logger.info("Adding a new import into the import list of `${referencingFile.name}`: `${newImportStatement.text}` (for the qualified name: ${reference.qualifiedName})")
+                                importList.add(newImportStatement)
+                            }
+                            else -> logger.error("Cannot find/add import statement for `${reference.qualifiedName}` in `${referencingFile.virtualFile.path}`. The transformation may be incorrect.")
                         }
-                        referencingFile.packageName == oldPackageName -> {
-                            // otherwise, if a referencing file was within the same package
-                            // as the moved file, add a new import statement
-                            logger.info("Adding a new import into the import list of `${referencingFile.name}`: `${newImportStatement.text}` (for the qualified name: ${reference.qualifiedName})")
-                            importList.add(newImportStatement)
-                        }
-                        else -> logger.error("Cannot find/add import statement for `${reference.qualifiedName}` in `${referencingFile.virtualFile.path}`. The transformation may be incorrect.")
                     }
                 }
             }
+
 
             TransformationResult.Success(
                 message = "Moved ${virtualFile.name} from package '$oldPackageName' to '$newPackageName'",
