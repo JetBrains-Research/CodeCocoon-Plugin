@@ -256,11 +256,19 @@ class MoveFileToAiSuggestedDirectoryTransformation(
                 */
             }
 
-            // TODO: move into methods all three stages.
             // TODO: unit all three stages under a single write command action.
-            // add/update symbol imports in referencing files
             WriteCommandAction.runWriteCommandAction<Unit>(project) {
                 logger.info("Updating imports in referencing files...")
+                for ((referencingFile, referencedClasses) in referencingFilesToClasses) {
+                    // update or add imports of the moved classes in the referencing files
+                    // IMPORTANT: this step MUST be done AFTER the file is moved and its package is updated
+                    referencingFile.updateImportsOfMovedReferencedClasses(
+                        referencedClasses,
+                        oldPackageName,
+                    )
+                }
+
+                /*
                 for ((referencingFile, referencedClasses) in referencingFilesToClasses) {
                     // a referencing file can be either:
                     //   1. From a different package -> update its import of the referenced class
@@ -290,8 +298,8 @@ class MoveFileToAiSuggestedDirectoryTransformation(
                         }
                     }
                 }
+                */
             }
-
 
             TransformationResult.Success(
                 message = "Moved ${virtualFile.name} from package '$oldPackageName' to '$newPackageName'",
@@ -534,6 +542,41 @@ class MoveFileToAiSuggestedDirectoryTransformation(
         return movedPsiFile
     }
 
+    private fun PsiJavaFile.updateImportsOfMovedReferencedClasses(
+        referencedClasses: Set<PsiClass>,
+        oldPackageName: String,
+    ) {
+        // The referencing file can be either:
+        //   1. From a different package -> update its import of the referenced class
+        //   2. Within the same package, hence, it may not have an import of the referenced class -> add a new import
+        val referencingFile = this
+        val elementFactory = JavaPsiFacade.getElementFactory(project)
+        val importList = referencingFile.importList ?: return
+
+        for (reference in referencedClasses) {
+            val newImportStatement = elementFactory.createImportStatement(reference)
+            logger.info("Considered reference `${reference.qualifiedName}` (contained by `${reference.containingFile}` file) referenced in `${referencingFile.name}`:")
+
+            // search for the import statement that corresponds to the referenced class
+            val oldImportStatement = importList.importStatements.find { it.qualifiedName == reference.qualifiedName }
+
+            when {
+                oldImportStatement != null -> {
+                    // update this import statement with the new package prefix
+                    logger.info("Replacing import in `${referencingFile.name}` `${oldImportStatement.text}` -> `${newImportStatement.text}`")
+                    oldImportStatement.replace(newImportStatement)
+                }
+                referencingFile.packageName == oldPackageName -> {
+                    // otherwise, if a referencing file was within the same package
+                    // as the moved file, add a new import statement
+                    logger.info("Adding a new import into the import list of `${referencingFile.name}`: `${newImportStatement.text}` (for the qualified name: ${reference.qualifiedName})")
+                    importList.add(newImportStatement)
+                }
+                else -> logger.error("Cannot find/add import statement for `${reference.qualifiedName}` in `${referencingFile.virtualFile.path}`. The transformation may be incorrect.")
+            }
+        }
+    }
+
     /**
      * Checks if the given file has an import for the specified qualified name.
      */
@@ -561,5 +604,6 @@ class MoveFileToAiSuggestedDirectoryTransformation(
         const val ID = "move-file-to-ai-suggested-directory-transformation"
     }
 }
+
 
 
