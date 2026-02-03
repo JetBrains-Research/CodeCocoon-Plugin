@@ -15,6 +15,7 @@ import com.intellij.openapi.vfs.VfsUtil
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.psi.*
 import com.intellij.psi.search.GlobalSearchScope
+import com.intellij.psi.search.SearchScope
 import com.intellij.psi.search.searches.ReferencesSearch
 import kotlinx.coroutines.runBlocking
 import okio.Path.Companion.toPath
@@ -222,20 +223,26 @@ class MoveFileToAiSuggestedDirectoryTransformation(
 
 
             // collect public classes/interfaces that will need import updates in other files
-            val publicClasses: List<PsiClass> = collectPublicClasses(psiFile)
+            val publicClasses: List<PsiClass> = psiFile.collectPublicClasses()
             val publicQualifiedNames = publicClasses.mapNotNull { it.qualifiedName }.toSet()
             logger.info("Found ${publicClasses.size} public classes of `${psiFile.name}` file: ${publicClasses.map { it.name }} -> corresponding qualified names ${publicQualifiedNames.toList()} (their imports in other files will be updated with a new package $newPackageName)")
 
             // Find all files that reference these classes. We intentionally collect referencing
             // files before the file is moved. Otherwise, the references become corrupted.
-            val referencedClassesInFiles: Map<PsiJavaFile, Set<PsiClass>> = findReferencingFiles(project, publicClasses)
-            logger.info("References from the `${psiFile.name}` file: ${referencedClassesInFiles.map { (key, value) -> "${key.name} -> ${value.map { it.name }}" }}")
+            val referencingFilesToClasses: Map<PsiJavaFile, Set<PsiClass>> = publicClasses.findReferencingFiles(project)
+            logger.info("References from the `${psiFile.name}` file: ${referencingFilesToClasses.map { (key, value) -> "${key.name} -> ${value.map { it.name }}" }}")
 
 
             // ==== Moving the file into the new directory ==== //
-            logger.info("Moving the file into a target directory...")
             WriteCommandAction.runWriteCommandAction<Unit>(project) {
-                // move the file
+                logger.info("Moving the file into a target directory...")
+                virtualFile.moveAndUpdatePackage(
+                    project = project,
+                    requestor = requestor,
+                    where = destinationDirectory,
+                    packageName = newPackageName,
+                )
+                /*
                 logger.info("Moving file to new location...")
                 virtualFile.move(requestor, destinationDirectory)
 
@@ -246,6 +253,7 @@ class MoveFileToAiSuggestedDirectoryTransformation(
                 // update package statement
                 logger.info("Updating package statement to $newPackageName")
                 updatePackageStatement(movedPsiFile, newPackageName)
+                */
             }
 
             // TODO: move into methods all three stages.
@@ -253,7 +261,7 @@ class MoveFileToAiSuggestedDirectoryTransformation(
             // add/update symbol imports in referencing files
             WriteCommandAction.runWriteCommandAction<Unit>(project) {
                 logger.info("Updating imports in referencing files...")
-                for ((referencingFile, referencedClasses) in referencedClassesInFiles) {
+                for ((referencingFile, referencedClasses) in referencingFilesToClasses) {
                     // a referencing file can be either:
                     //   1. From a different package -> update its import of the referenced class
                     //   2. Within the same package, hence, it may not have an import of the referenced class -> add a new import
@@ -376,62 +384,78 @@ class MoveFileToAiSuggestedDirectoryTransformation(
     /**
      * Collects all public classes and **interfaces** from the given Java file.
      */
-    private fun collectPublicClasses(javaFile: PsiJavaFile): List<PsiClass> {
-        val publicClasses = mutableListOf<PsiClass>()
-        javaFile.accept(object : PsiRecursiveElementVisitor() {
-            override fun visitElement(element: PsiElement) {
-                super.visitElement(element)
-                // TODO: public abstract classes included? enums? what else?
-                if (element is PsiClass && element.hasModifierProperty(PsiModifier.PUBLIC)) {
-                    publicClasses.add(element)
+    private fun PsiFile.collectPublicClasses(): List<PsiClass> {
+        val psiFile = this
+        val publicClasses: List<PsiClass> = buildList {
+            psiFile.accept(object : PsiRecursiveElementVisitor() {
+                override fun visitElement(element: PsiElement) {
+                    super.visitElement(element)
+                    // TODO: public abstract classes included? enums? what else?
+                    if (element is PsiClass && element.hasModifierProperty(PsiModifier.PUBLIC)) {
+                        // adding this class to the list of public classes
+                        add(element)
+                    }
                 }
-            }
-        })
+            })
+        }
         return publicClasses
     }
 
     /**
      * Finds all Java files that reference any of the given classes.
      */
-    private fun findReferencingFiles(project: Project, classes: List<PsiClass>): Map<PsiJavaFile, Set<PsiClass>> {
-        val referencedClassesInFiles = mutableMapOf<PsiJavaFile, MutableSet<PsiClass>>()
-        // val referencingFiles = mutableSetOf<PsiJavaFile>()
+    private fun List<PsiClass>.findReferencingFiles(project: Project): Map<PsiJavaFile, Set<PsiClass>> {
+        val classes = this
         val searchScope = GlobalSearchScope.projectScope(project)
+        val referencingFilesToClasses = mutableMapOf<PsiJavaFile, MutableSet<PsiClass>>()
 
         for (psiClass in classes) {
-            val references = ReferencesSearch.search(psiClass, searchScope).findAll()
-            for (reference in references) {
-                val containingFile = reference.element.containingFile
-                // don't add a file that contains the given reference
-                if (containingFile is PsiJavaFile && containingFile != psiClass.containingFile) {
-                    if (!referencedClassesInFiles.containsKey(containingFile)) {
-                        referencedClassesInFiles[containingFile] = mutableSetOf(psiClass)
+            val referencingFiles = psiClass.findReferencingFiles(searchScope)
+
+            // val references = ReferencesSearch.search(psiClass, searchScope).findAll()
+            for (referencingFile in referencingFiles) {
+                // don't add a file that contains the given class
+                if (referencingFile is PsiJavaFile && referencingFile != psiClass.containingFile) {
+                    if (!referencingFilesToClasses.containsKey(referencingFile)) {
+                        referencingFilesToClasses[referencingFile] = mutableSetOf(psiClass)
                     } else {
-                        referencedClassesInFiles[containingFile]!!.add(psiClass)
+                        referencingFilesToClasses[referencingFile]!!.add(psiClass)
                     }
                 }
             }
         }
 
-        return referencedClassesInFiles
+        return referencingFilesToClasses
+    }
+
+    /**
+     * Returns a set of files that reference the given [PsiClass].
+     * **May include the file that contains the given [PsiClass]**
+     */
+    private fun PsiClass.findReferencingFiles(searchScope: SearchScope): Set<PsiFile> {
+        return ReferencesSearch.search(this, searchScope)
+            .findAll()
+            .map { it.element.containingFile }
+            .toSet()
     }
 
     // TODO: write comment that these methods require clients to wrap them with write actions
     /**
      * Updates the package statement in the moved file.
      */
-    private fun updatePackageStatement(javaFile: PsiJavaFile, newPackageName: String) {
-        val elementFactory = JavaPsiFacade.getElementFactory(javaFile.project)
+    private fun PsiJavaFile.updatePackageStatement(newPackageName: String) {
+        val file = this
+        val elementFactory = JavaPsiFacade.getElementFactory(file.project)
         val newPackageStatement = elementFactory.createPackageStatement(newPackageName)
 
-        val existingPackageStatement = javaFile.packageStatement
+        val existingPackageStatement = file.packageStatement
         if (existingPackageStatement != null) {
             existingPackageStatement.replace(newPackageStatement)
         } else {
             // If no package statement exists, add one at the beginning
-            val firstChild = javaFile.firstChild
+            val firstChild = file.firstChild
             if (firstChild != null) {
-                javaFile.addBefore(newPackageStatement, firstChild)
+                file.addBefore(newPackageStatement, firstChild)
             }
         }
     }
@@ -488,6 +512,28 @@ class MoveFileToAiSuggestedDirectoryTransformation(
         }
     }
 
+    private fun VirtualFile.moveAndUpdatePackage(
+        project: Project,
+        requestor: Any,
+        where: VirtualFile,
+        packageName: String
+    ): PsiJavaFile {
+        val fileToMove = this
+        logger.info("Moving file to new location...")
+        fileToMove.move(requestor, where)
+
+        // refresh and get updated PSI
+        val movedPsiFile = PsiManager.getInstance(project).findFile(fileToMove) as? PsiJavaFile
+            ?: throw IllegalStateException("Cannot find moved file ${fileToMove.path}")
+        // TODO: don't throw, use Result ^ & project exception
+
+        // update package statement
+        logger.info("Updating package statement to $packageName")
+        movedPsiFile.updatePackageStatement(packageName)
+
+        return movedPsiFile
+    }
+
     /**
      * Checks if the given file has an import for the specified qualified name.
      */
@@ -515,4 +561,5 @@ class MoveFileToAiSuggestedDirectoryTransformation(
         const val ID = "move-file-to-ai-suggested-directory-transformation"
     }
 }
+
 
