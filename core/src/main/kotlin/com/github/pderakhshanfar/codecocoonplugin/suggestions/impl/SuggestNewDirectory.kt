@@ -156,7 +156,7 @@ private fun buildSystemPrompt(projectRoot: String, existingOnly: Boolean): Strin
         
         CRITICAL RULES:
         - [!] OUTPUT ABSOLUTE PATHS BASED ON THE PROJECT ROOT!
-        - [!] DO NOT output the same directory where the given file already resides!
+        - [!] DO NOT OUTPUT THE SAME DIRECTORY WHERE THE GIVEN FILE ALREADY RESIDES!
         - Never suggest locations that would cause naming conflicts
         - Prefer existing directories unless the class clearly belongs to a new feature module
         - Consider import dependencies visible in the source file
