@@ -242,29 +242,8 @@ class MoveFileToAiSuggestedDirectoryTransformation(
 
                 // updateImportsInReferencingFile(referencingFile, oldPackageName, newPackageName, publicClasses)
                 // modifiedFilesCount += 1
-
-
-                // TODO: remove the below to pieces
-                // collect imports that need to be updated with the new package prefix, i.e.:
-                // `import oldPackageName.SymbolName` -> `import newPackageName.SymbolName`
-                val importsToUpdate: List<PsiImportStatement> = buildList {
-                    for (importStatement in importList.importStatements) {
-                        val importedName = importStatement.qualifiedName ?: continue
-                        if (importedName in publicQualifiedNames) {
-                            add(importStatement)
-                        }
-                    }
-                }
-                // update the imports according to the rule above
-                for (oldImportStatement in importsToUpdate) {
-                    val qualifiedName = oldImportStatement.qualifiedName ?: continue
-                    val newImportedName = qualifiedName.replaceFirst(oldPackageName, newPackageName)
-                    val newImportStatement = elementFactory.createImportStatementOnDemand(newImportedName)
-
-                    logger.info("Replacing import in `${referencingFile.name}` file: `$qualifiedName` -> `$newImportedName` (new import statement: `${newImportStatement.text}`)")
-                    oldImportStatement.replace(newImportStatement)
-                }
             }
+
 
 
 
