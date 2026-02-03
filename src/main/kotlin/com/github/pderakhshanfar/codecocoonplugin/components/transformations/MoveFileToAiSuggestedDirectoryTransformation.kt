@@ -17,6 +17,7 @@ import com.intellij.psi.search.GlobalSearchScope
 import com.intellij.psi.search.searches.ReferencesSearch
 import kotlinx.coroutines.runBlocking
 import java.io.File
+import java.nio.file.Files
 
 
 /**
@@ -102,16 +103,40 @@ class MoveFileToAiSuggestedDirectoryTransformation(
             val referencingFiles = findReferencingFiles(project, publicClasses)
             logger.info("Found ${referencingFiles.size} files referencing classes from this file")
 
-            // Step 3: Calculate the new target package name
-            val targetDir = File(targetDirectoryPath)
-            val sourceRootPath = File(sourceRoot.path)
+            // Step 3: Calculate target package name
+            // The suggestion API returns paths relative to the project root
+            val projectBasePath = project.basePath
+                ?: return TransformationResult.Failure("Cannot determine project base path")
+            val absoluteTargetPath = File(projectBasePath, targetDirectoryPath).canonicalPath
 
-            val newPackageName = if (targetDir.startsWith(sourceRootPath)) {
-                val relativePath = targetDir.relativeTo(sourceRootPath).path
-                relativePath.replace(File.separatorChar, '.')
-            } else {
+            logger.info("Resolved absolute target path: $absoluteTargetPath")
+
+            // Verify the target directory is under a source root
+            val targetFile = File(absoluteTargetPath)
+
+            // Create a directory structure if it doesn't exist, then get VirtualFile
+            Files.createDirectories(targetFile.toPath())
+            val targetVirtualFile = VfsUtil.findFileByIoFile(targetFile, /* refreshIfNeeded = */ true)
+                ?: return TransformationResult.Failure("Cannot find virtual file for target: $absoluteTargetPath")
+
+            val targetSourceRoot = fileIndex.getSourceRootForFile(targetVirtualFile)
+                    ?: return TransformationResult.Failure(
+                        "Target directory $targetDirectoryPath is not under any source root in the project")
+
+            // Calculate new package name relative to source root
+            val newPackageName = run {
+                val targetSourceRootPath = File(targetSourceRoot.path)
+                when {
+                    targetFile.startsWith(targetSourceRootPath) -> {
+                        val relativePath = targetFile.relativeTo(targetSourceRootPath).path
+                        if (relativePath.isEmpty()) "" else relativePath.replace(File.separatorChar, '.')
+                    }
+                    else -> null
+                }
+            }
+            if (newPackageName == null) {
                 return TransformationResult.Failure(
-                    "Target directory $targetDirectoryPath is not under source root ${sourceRoot.path}")
+                    "Target directory $absoluteTargetPath is not under source root ${targetSourceRoot.path}")
             }
 
             logger.info("New package will be: $newPackageName")
@@ -121,21 +146,12 @@ class MoveFileToAiSuggestedDirectoryTransformation(
                 return TransformationResult.Failure("Invalid package name: $newPackageName")
             }
 
-            // Step 4: Create a target directory if needed
-            val targetVirtualDir = WriteCommandAction.runWriteCommandAction<VirtualFile>(project) {
-                VfsUtil.createDirectories(targetDirectoryPath)
-            }
-
-            if (!targetVirtualDir.isDirectory) {
-                return TransformationResult.Failure("Failed to create target directory: $targetDirectoryPath")
-            }
-
             val modifiedFiles = mutableSetOf<PsiFile>()
 
             WriteCommandAction.runWriteCommandAction(project) {
-                // Step 5: Move the file
+                // Step 4: Move the file
                 logger.info("Moving file to new location...")
-                virtualFile.move(requestor, targetVirtualDir)
+                virtualFile.move(requestor, targetVirtualFile)
 
                 // Refresh and get updated PSI
                 val movedPsiFile = PsiManager.getInstance(project).findFile(virtualFile) as? PsiJavaFile
@@ -143,15 +159,15 @@ class MoveFileToAiSuggestedDirectoryTransformation(
 
                 modifiedFiles.add(movedPsiFile)
 
-                // Step 6: Update package statement
+                // Step 5: Update package statement
                 logger.info("Updating package statement to $newPackageName")
                 updatePackageStatement(movedPsiFile, newPackageName)
 
-                // Step 7: Fix imports in the moved file
+                // Step 6: Fix imports in the moved file
                 logger.info("Fixing imports in moved file...")
                 fixImportsInMovedFile(movedPsiFile, oldPackageName)
 
-                // Step 8: Update imports in other files that reference moved classes
+                // Step 7: Update imports in other files that reference moved classes
                 logger.info("Updating imports in ${referencingFiles.size} referencing files...")
                 for (referencingFile in referencingFiles) {
                     updateImportsInReferencingFile(referencingFile, oldPackageName, newPackageName, publicClasses)
@@ -206,6 +222,7 @@ class MoveFileToAiSuggestedDirectoryTransformation(
         return referencingFiles
     }
 
+    // TODO: write comment that these methods require clients to wrap them with write actions
     /**
      * Updates the package statement in the moved file.
      */
