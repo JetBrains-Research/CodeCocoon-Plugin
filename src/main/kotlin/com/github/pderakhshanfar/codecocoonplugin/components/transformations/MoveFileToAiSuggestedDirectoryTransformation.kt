@@ -6,7 +6,6 @@ import com.github.pderakhshanfar.codecocoonplugin.executor.TransformationResult
 import com.github.pderakhshanfar.codecocoonplugin.intellij.logging.withStdout
 import com.github.pderakhshanfar.codecocoonplugin.suggestions.SuggestionsApi
 import com.github.pderakhshanfar.codecocoonplugin.transformation.requireOrDefault
-import com.intellij.openapi.command.WriteCommandAction
 import com.intellij.openapi.diagnostic.thisLogger
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.roots.ProjectFileIndex
@@ -96,13 +95,6 @@ class MoveFileToAiSuggestedDirectoryTransformation(
 
             logger.info("Original package: $oldPackageName")
 
-            // Collect public classes/interfaces that will need import updates in other files
-            val publicClasses: List<PsiClass> = collectPublicClasses(psiFile)
-            logger.info("Found ${publicClasses.size} public classes: ${publicClasses.map { it.name }}")
-
-            // Find all files that reference these classes
-            val referencingFiles = findReferencingFiles(project, publicClasses)
-            logger.info("Found ${referencingFiles.size} files referencing classes from this file: ${referencingFiles.map { it.name }}")
 
             // Step 3: Calculate the target package name
             // In case when the suggestion API returns paths relative to the project root
@@ -207,6 +199,75 @@ class MoveFileToAiSuggestedDirectoryTransformation(
             }
 
 
+
+
+            // ==== Update imports in other files that reference classes to be moved ==== //
+
+            // Collect public classes/interfaces that will need import updates in other files
+            val publicClasses: List<PsiClass> = collectPublicClasses(psiFile)
+            val publicQualifiedNames = publicClasses.mapNotNull { it.qualifiedName }.toSet()
+            logger.info("Found ${publicClasses.size} public classes of `${psiFile.name}` file: ${publicClasses.map { it.name }} -> corresponding qualified names ${publicQualifiedNames.toList()} (their imports in other files will be updated with a new package $newPackageName)")
+
+            // Find all files that reference these classes
+            val referencedClassesInFiles: Map<PsiJavaFile, Set<PsiClass>> = findReferencingFiles(project, publicClasses)
+            logger.info("References from the `${psiFile.name}` file: ${referencedClassesInFiles.map { (key, value) -> "${key.name} -> ${value.map { it.name }}" }}")
+
+            logger.info("Updating imports in referencing files...")
+
+            for ((referencingFile, referencedClasses) in referencedClassesInFiles) {
+                // a referencing file can be either:
+                //   1. From a different package -> update its import of the referenced class
+                //   2. Within the same package, hence, it may not have an import of the referenced class -> add a new import
+                val importList = referencingFile.importList ?: continue
+
+                for (reference in referencedClasses) {
+                    // TODO: no use of !!
+                    val newImportedName = reference.qualifiedName!!.replaceFirst(oldPackageName, newPackageName)
+                    val newImportStatement = elementFactory.createImportStatementOnDemand(newImportedName)
+
+                    // search for the import statement that corresponds to the referenced class
+                    val oldImportStatement = importList.importStatements.find { it.qualifiedName == reference.qualifiedName }
+
+                    if (oldImportStatement != null) {
+                        // update this import statement with the new package prefix
+                        logger.info("Replacing import in `${referencingFile.name}` `${oldImportStatement.text}` -> `${newImportStatement.text}`")
+                        oldImportStatement.replace(newImportStatement)
+                    } else if (referencingFile.packageName == oldPackageName) {
+                        // otherwise, if a referencing file is within the same package
+                        // as the file to be moved, add a new import statement
+                        logger.info("Adding a new import into the import list of `${referencingFile.name}`: `${newImportStatement.text}` (for the qualified name: ${reference.qualifiedName})")
+                        importList.add(newImportStatement)
+                    }
+                }
+
+                // updateImportsInReferencingFile(referencingFile, oldPackageName, newPackageName, publicClasses)
+                // modifiedFilesCount += 1
+
+
+                // TODO: remove the below to pieces
+                // collect imports that need to be updated with the new package prefix, i.e.:
+                // `import oldPackageName.SymbolName` -> `import newPackageName.SymbolName`
+                val importsToUpdate: List<PsiImportStatement> = buildList {
+                    for (importStatement in importList.importStatements) {
+                        val importedName = importStatement.qualifiedName ?: continue
+                        if (importedName in publicQualifiedNames) {
+                            add(importStatement)
+                        }
+                    }
+                }
+                // update the imports according to the rule above
+                for (oldImportStatement in importsToUpdate) {
+                    val qualifiedName = oldImportStatement.qualifiedName ?: continue
+                    val newImportedName = qualifiedName.replaceFirst(oldPackageName, newPackageName)
+                    val newImportStatement = elementFactory.createImportStatementOnDemand(newImportedName)
+
+                    logger.info("Replacing import in `${referencingFile.name}` file: `$qualifiedName` -> `$newImportedName` (new import statement: `${newImportStatement.text}`)")
+                    oldImportStatement.replace(newImportStatement)
+                }
+            }
+
+
+
             /*
             val movedPsiFile = WriteCommandAction.runWriteCommandAction<PsiJavaFile>(project) {
                 // Step 4: Move the file
@@ -268,8 +329,9 @@ class MoveFileToAiSuggestedDirectoryTransformation(
     /**
      * Finds all Java files that reference any of the given classes.
      */
-    private fun findReferencingFiles(project: Project, classes: List<PsiClass>): Set<PsiJavaFile> {
-        val referencingFiles = mutableSetOf<PsiJavaFile>()
+    private fun findReferencingFiles(project: Project, classes: List<PsiClass>): Map<PsiJavaFile, Set<PsiClass>> {
+        val referencedClassesInFiles = mutableMapOf<PsiJavaFile, MutableSet<PsiClass>>()
+        // val referencingFiles = mutableSetOf<PsiJavaFile>()
         val searchScope = GlobalSearchScope.projectScope(project)
 
         for (psiClass in classes) {
@@ -277,12 +339,17 @@ class MoveFileToAiSuggestedDirectoryTransformation(
             for (reference in references) {
                 val containingFile = reference.element.containingFile
                 if (containingFile is PsiJavaFile && containingFile != psiClass.containingFile) {
-                    referencingFiles.add(containingFile)
+                    // referencingFiles.add(containingFile)
+                    if (!referencedClassesInFiles.containsKey(containingFile)) {
+                        referencedClassesInFiles[containingFile] = mutableSetOf(psiClass)
+                    } else {
+                        referencedClassesInFiles[containingFile]!!.add(psiClass)
+                    }
                 }
             }
         }
 
-        return referencingFiles
+        return referencedClassesInFiles
     }
 
     // TODO: write comment that these methods require clients to wrap them with write actions
