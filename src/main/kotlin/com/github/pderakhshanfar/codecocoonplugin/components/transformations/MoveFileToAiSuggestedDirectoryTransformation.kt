@@ -6,6 +6,7 @@ import com.github.pderakhshanfar.codecocoonplugin.executor.TransformationResult
 import com.github.pderakhshanfar.codecocoonplugin.intellij.logging.withStdout
 import com.github.pderakhshanfar.codecocoonplugin.suggestions.SuggestionsApi
 import com.github.pderakhshanfar.codecocoonplugin.transformation.requireOrDefault
+import com.intellij.codeInsight.completion.JavaPsiClassReferenceElement
 import com.intellij.openapi.diagnostic.thisLogger
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.roots.ProjectFileIndex
@@ -200,7 +201,6 @@ class MoveFileToAiSuggestedDirectoryTransformation(
 
 
 
-
             // ==== Update imports in other files that reference classes to be moved ==== //
 
             // Collect public classes/interfaces that will need import updates in other files
@@ -222,8 +222,10 @@ class MoveFileToAiSuggestedDirectoryTransformation(
 
                 for (reference in referencedClasses) {
                     // TODO: no use of !!
+                    println("[!!!] Considering reference: ${reference.qualifiedName}")
                     val newImportedName = reference.qualifiedName!!.replaceFirst(oldPackageName, newPackageName)
-                    val newImportStatement = elementFactory.createImportStatementOnDemand(newImportedName)
+                    val newImportStatement = elementFactory.createImportStatement(reference)
+                    //TODO: need a new imported name `val newImportStatement = elementFactory.createImportStatementOnDemand(newImportedName)`
 
                     // search for the import statement that corresponds to the referenced class
                     val oldImportStatement = importList.importStatements.find { it.qualifiedName == reference.qualifiedName }
