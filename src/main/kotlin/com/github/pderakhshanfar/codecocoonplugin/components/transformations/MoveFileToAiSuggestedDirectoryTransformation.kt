@@ -79,7 +79,7 @@ class MoveFileToAiSuggestedDirectoryTransformation(
             val suggestedDirectories = runBlocking {
                 SuggestionsApi.suggestNewDirectory(
                     token = System.getenv("OPENAI_API_KEY"),
-                    projectRoot = project.basePath!!,
+                    projectRoot = projectRoot,
                     filepath = virtualFile.path,
                     // TODO: extract only declarations if the file is big
                     content = { psiFile.text },
