@@ -143,7 +143,7 @@ private fun buildSystemPrompt(projectRoot: String, existingOnly: Boolean): Strin
            {
              "suggestions": [
                {
-                    "path": "src/main/java/com/example/service",
+                    "path": "Users/user/project/root/path/src/main/java/com/example/service",
                     "confidence": "high",
                     "reason": "...",
                     "conflicts": [{ "symbol": "Class/function name", "filepath": "target/path" }],
@@ -155,7 +155,8 @@ private fun buildSystemPrompt(projectRoot: String, existingOnly: Boolean): Strin
         ```
         
         CRITICAL RULES:
-        - DO NOT output the same directory where the given file already resides!
+        - [!] OUTPUT ABSOLUTE PATHS BASED ON THE PROJECT ROOT!
+        - [!] DO NOT output the same directory where the given file already resides!
         - Never suggest locations that would cause naming conflicts
         - Prefer existing directories unless the class clearly belongs to a new feature module
         - Consider import dependencies visible in the source file
