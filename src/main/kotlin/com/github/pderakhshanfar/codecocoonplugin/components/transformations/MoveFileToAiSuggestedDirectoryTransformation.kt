@@ -138,9 +138,15 @@ class MoveFileToAiSuggestedDirectoryTransformation(
                     else -> null
                 }
             }
+
             if (newPackageName == null) {
                 return TransformationResult.Failure(
                     "Target directory $absoluteTargetPath is not under source root ${targetSourceRoot.path}")
+            } else if (newPackageName == oldPackageName) {
+                // TODO: iterate through the suggested file location
+                return TransformationResult.Skipped(
+                    "The new package equals to the original one: $newPackageName. " +
+                        "The suggested directory would remain unchanged: $absoluteTargetPath")
             }
 
             logger.info("New package will be: $newPackageName")
