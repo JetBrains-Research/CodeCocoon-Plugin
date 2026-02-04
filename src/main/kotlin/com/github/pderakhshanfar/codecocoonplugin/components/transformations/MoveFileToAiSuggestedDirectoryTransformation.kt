@@ -92,12 +92,14 @@ class MoveFileToAiSuggestedDirectoryTransformation(
             // select suitable directory from AI suggestions
             val oldPackageName = psiFile.packageName
             logger.info("Suggestions produced by AI: $suggestedDirectories")
-            val result = findSuitableDestinationDirectory(
-                project = project,
-                projectRoot = projectRoot,
-                oldPackageName = oldPackageName,
-                suggestions = suggestedDirectories,
-            )
+            val result = WriteCommandAction.runWriteCommandAction<Result<DestinationDirectory>>(project) {
+                findAndCreateSuitableDestinationDirectory(
+                    project = project,
+                    projectRoot = projectRoot,
+                    oldPackageName = oldPackageName,
+                    suggestions = suggestedDirectories,
+                )
+            }
             // validate
             val (destinationDirectory, newPackageName) = when {
                 result.isSuccess -> result.getOrThrow()
@@ -183,12 +185,19 @@ class MoveFileToAiSuggestedDirectoryTransformation(
         }
     }
 
+    /**
+     * Represents a directory destination where a file should be moved during a transformation process
+     * and its corresponding package.
+     *
+     * @property directory The virtual representation of the target directory.
+     * @property packageName The package name associated with the target directory.
+     */
     data class DestinationDirectory(
         val directory: VirtualFile,
         val packageName: String,
     )
 
-    private fun findSuitableDestinationDirectory(
+    private fun findAndCreateSuitableDestinationDirectory(
         project: Project,
         projectRoot: String,
         oldPackageName: String,
@@ -346,7 +355,6 @@ class MoveFileToAiSuggestedDirectoryTransformation(
             .toSet()
     }
 
-    // TODO: write comment that these methods require clients to wrap them with write actions
     /**
      * Updates the package statement in the moved file.
      */
