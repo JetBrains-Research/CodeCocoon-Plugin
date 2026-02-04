@@ -199,67 +199,66 @@ class MoveFileToAiSuggestedDirectoryTransformation(
         /**
          * Produces a side effect for the unsuccessful suggestions:
          * The directory path of the suggestion gets created on the file system.
+         *
+         * @param suggestion a directory path suggested by AI.
          */
         fun toDestinationDirectoryIfSuitable(suggestion: String): Result<DestinationDirectory> {
-            val targetDirectoryPath = suggestion
-            logger.info("Considering suggested target directory: $targetDirectoryPath")
+            logger.info("Considering suggested directory: $suggestion")
 
             // in case when the suggestion API returns paths relative to the project root
-            val absoluteTargetPath = when {
-                targetDirectoryPath.toPath().isAbsolute -> targetDirectoryPath
-                else -> File(projectRoot, targetDirectoryPath).canonicalPath
+            val targetDirectory = when {
+                suggestion.toPath().isAbsolute -> suggestion
+                else -> File(projectRoot, suggestion).absolutePath
             }
-            logger.info("Resolved absolute target path: $absoluteTargetPath")
+            logger.info("Absolute target directory: $targetDirectory")
 
             // verify the target directory is under a source root
-            // Create a directory structure if it doesn't exist, then get VirtualFile
-            // val targetFile = File(absoluteTargetPath)
-            // Files.createDirectories(targetFile.toPath())
-            // val targetVirtualFile = VfsUtil.find(targetFile, /* refreshIfNeeded = */ true)
-            val targetVirtualFile = VfsUtil.createDirectories(absoluteTargetPath)
+            // Create a directory structure if it doesn't exist
+            val virtualFile = VfsUtil.createDirectories(targetDirectory)
                 ?: return Result.failure(TransformationStepFailed(
-                    "Cannot find virtual file for target: $absoluteTargetPath"))
+                    "Cannot find virtual file for target: $targetDirectory"))
 
-            val targetSourceRoot = fileIndex.getSourceRootForFile(targetVirtualFile)
+            val sourceRoot = fileIndex.getSourceRootForFile(virtualFile)
                 ?: return Result.failure(TransformationStepFailed(
-                    "Target directory $targetDirectoryPath is not under any source root in the project"))
+                    "Target directory $targetDirectory doesn't belong to any project's source roots"))
 
             // Calculate new package name relative to source root
-            // val targetSourceRootPath = File(targetSourceRoot.path)
             val newPackageName = when {
-                // targetFile.startsWith(targetSourceRootPath)
-                absoluteTargetPath.startsWith(targetSourceRoot.path) -> {
-                    val target = File(absoluteTargetPath)
-                    val sourceRoot = File(targetSourceRoot.path)
+                targetDirectory.startsWith(sourceRoot.path) -> {
+                    // trim the source root path from the target directory to build a new package
+                    val relativePath = File(targetDirectory)
+                        .relativeTo(File(sourceRoot.path)).path
 
-                    val relativePath = target.relativeTo(sourceRoot).path
                     if (relativePath.isEmpty()) "" else relativePath.replace(File.separatorChar, '.')
                 }
                 else -> null
             }
+
             logger.info("""
-                Suggestion: $suggestion
+                suggestion: $suggestion
+                targetDirectory: $targetDirectory
                 oldPackageName: $oldPackageName
                 newPackageName: $newPackageName (isValid=${newPackageName?.isValidPackageName()})
-                targetSourceRoot: $targetSourceRoot
+                targetSourceRoot: ${sourceRoot.path}
             """.trimIndent())
+
             // validate package
             when {
                 newPackageName == null -> return Result.failure(TransformationStepFailed(
-                    "Cannot create new package name for target directory $absoluteTargetPath: " +
-                            "target directory is not under source root ${targetSourceRoot.path}"
+                    "Cannot create new package name for target directory $targetDirectory: " +
+                            "target directory is not under source root ${sourceRoot.path}"
                 ))
                 newPackageName == oldPackageName -> return Result.failure(TransformationStepFailed(
                 "The new package equals to the original one: $newPackageName. " +
-                        "The suggested directory would remain unchanged: $absoluteTargetPath"
+                        "The suggested directory would remain unchanged: $targetDirectory"
                 ))
                 !newPackageName.isValidPackageName() -> return Result.failure(TransformationStepFailed(
-                    "Suggestion $absoluteTargetPath leads to invalid package name: $newPackageName"
+                    "Suggestion $targetDirectory leads to invalid package name: $newPackageName"
                 ))
             }
 
             return Result.success(DestinationDirectory(
-                directory = targetVirtualFile,
+                directory = virtualFile,
                 packageName = newPackageName
             ))
         }
@@ -286,53 +285,6 @@ class MoveFileToAiSuggestedDirectoryTransformation(
         }
 
         return suitableResult
-
-
-        /*
-        val targetDirectoryPath = suggestions.first()
-        logger.info("Selected target directory: $targetDirectoryPath")
-
-        // Step 3: Calculate the target package name
-        // In case when the suggestion API returns paths relative to the project root
-        val absoluteTargetPath = when {
-            targetDirectoryPath.toPath().isAbsolute -> targetDirectoryPath
-            else -> File(projectRoot, targetDirectoryPath).canonicalPath
-        }
-        logger.info("Resolved absolute target path: $absoluteTargetPath")
-
-        // Verify the target directory is under a source root
-        val targetFile = File(absoluteTargetPath)
-
-        // Create a directory structure if it doesn't exist, then get VirtualFile
-        // TODO: use `VfsUtil.createDirectories` and remove `targetFile`
-        Files.createDirectories(targetFile.toPath())
-
-        val targetVirtualFile = VfsUtil.findFileByIoFile(targetFile, *//* refreshIfNeeded = *//* true)
-            ?: return Result.failure(TransformationStepFailed(
-                "Cannot find virtual file for target: $absoluteTargetPath"))
-
-        val targetSourceRoot = fileIndex.getSourceRootForFile(targetVirtualFile)
-            ?: return Result.failure(TransformationStepFailed(
-                "Target directory $targetDirectoryPath is not under any source root in the project"))
-
-        // Calculate new package name relative to source root
-        val targetSourceRootPath = File(targetSourceRoot.path)
-        val newPackageName = when {
-            targetFile.startsWith(targetSourceRootPath) -> {
-                val relativePath = targetFile.relativeTo(targetSourceRootPath).path
-                if (relativePath.isEmpty()) "" else relativePath.replace(File.separatorChar, '.')
-            }
-            else -> null
-        }
-
-        return Result.success(
-            DestinationDirectory(
-                directory = targetVirtualFile,
-                // TODO: remove !!
-                packageName = newPackageName!!,
-            )
-        )
-        */
     }
 
 
