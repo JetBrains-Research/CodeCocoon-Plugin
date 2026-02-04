@@ -6,23 +6,11 @@ import com.github.pderakhshanfar.codecocoonplugin.intellij.logging.withStdout
 import com.intellij.openapi.command.WriteCommandAction
 import com.intellij.openapi.diagnostic.thisLogger
 import com.intellij.openapi.project.Project
-import com.intellij.openapi.roots.ProjectFileIndex
-import com.intellij.openapi.vfs.VfsUtil
 import com.intellij.openapi.vfs.VirtualFile
-import com.intellij.psi.JavaPsiFacade
-import com.intellij.psi.PsiClass
-import com.intellij.psi.PsiElement
-import com.intellij.psi.PsiFile
-import com.intellij.psi.PsiJavaCodeReferenceElement
-import com.intellij.psi.PsiJavaFile
-import com.intellij.psi.PsiManager
-import com.intellij.psi.PsiModifier
-import com.intellij.psi.PsiRecursiveElementVisitor
+import com.intellij.psi.*
 import com.intellij.psi.search.GlobalSearchScope
 import com.intellij.psi.search.SearchScope
 import com.intellij.psi.search.searches.ReferencesSearch
-import okio.Path.Companion.toPath
-import java.io.File
 
 class MoveFileToNewDirectoryTransformationImpl {
     private val logger = thisLogger().withStdout()

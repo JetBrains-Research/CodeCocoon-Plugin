@@ -13,10 +13,8 @@ import com.intellij.openapi.project.Project
 import com.intellij.openapi.roots.ProjectFileIndex
 import com.intellij.openapi.vfs.VfsUtil
 import com.intellij.openapi.vfs.VirtualFile
-import com.intellij.psi.*
-import com.intellij.psi.search.GlobalSearchScope
-import com.intellij.psi.search.SearchScope
-import com.intellij.psi.search.searches.ReferencesSearch
+import com.intellij.psi.PsiFile
+import com.intellij.psi.PsiJavaFile
 import kotlinx.coroutines.runBlocking
 import okio.Path.Companion.toPath
 import java.io.File
