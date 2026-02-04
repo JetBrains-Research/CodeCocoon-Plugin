@@ -265,7 +265,7 @@ class MoveFileToAiSuggestedDirectoryTransformation(
                     val relativePath = File(targetDirectory)
                         .relativeTo(File(sourceRoot.path)).path
 
-                    if (relativePath.isEmpty()) "" else relativePath.replace(File.separatorChar, '.')
+                    if (relativePath.isEmpty()) null else relativePath.replace(File.separatorChar, '.')
                 }
                 else -> null
             }
