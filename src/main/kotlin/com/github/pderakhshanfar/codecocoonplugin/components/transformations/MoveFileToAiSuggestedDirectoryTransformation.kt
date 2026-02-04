@@ -197,6 +197,24 @@ class MoveFileToAiSuggestedDirectoryTransformation(
         val packageName: String,
     )
 
+    /**
+     * Finds and creates a suitable destination directory among the provided suggestions.
+     * A suitable directory is one that matches the required criteria, such as being under a source root
+     * and having a valid package name. The first successful suggestion is returned as the result.
+     *
+     * If no suitable directory is found, a failure result is returned.
+     *
+     * NOTES:
+     * 1. **This method may produce side effects by creating directories on the file system for unsuccessful suggestions.**
+     * 2. **REQUIRES the write action scope.**
+     *
+     * @param project The IntelliJ Platform `Project` in which the operation is being performed.
+     * @param projectRoot The absolute path of the project's root directory.
+     * @param oldPackageName The original package name of the file being moved.
+     * @param suggestions A list of suggested directory paths to evaluate as potential destinations.
+     * @return A `Result` object containing the successfully created or validated `DestinationDirectory`,
+     *         or a failure with an appropriate error message.
+     */
     private fun findAndCreateSuitableDestinationDirectory(
         project: Project,
         projectRoot: String,
@@ -299,6 +317,8 @@ class MoveFileToAiSuggestedDirectoryTransformation(
 
     /**
      * Collects all public classes and **interfaces** from the given Java file.
+     *
+     * Read-only operation.
      */
     private fun PsiFile.collectPublicClasses(): List<PsiClass> {
         val psiFile = this
@@ -319,6 +339,8 @@ class MoveFileToAiSuggestedDirectoryTransformation(
 
     /**
      * Finds all Java files that reference any of the given classes.
+     *
+     * Read-only operation.
      */
     private fun List<PsiClass>.findReferencingFiles(project: Project): Map<PsiJavaFile, Set<PsiClass>> {
         val classes = this
@@ -347,6 +369,8 @@ class MoveFileToAiSuggestedDirectoryTransformation(
     /**
      * Returns a set of files that reference the given [PsiClass].
      * **May include the file that contains the given [PsiClass]**
+     *
+     * Read-only operation.
      */
     private fun PsiClass.findReferencingFiles(searchScope: SearchScope): Set<PsiFile> {
         return ReferencesSearch.search(this, searchScope)
@@ -357,6 +381,9 @@ class MoveFileToAiSuggestedDirectoryTransformation(
 
     /**
      * Updates the package statement in the moved file.
+     *
+     * NOTES:
+     * 1. **REQUIRES the write action scope**.
      */
     private fun PsiJavaFile.updatePackageStatement(newPackageName: String) {
         val file = this
@@ -376,8 +403,16 @@ class MoveFileToAiSuggestedDirectoryTransformation(
     }
 
     /**
-     * TODO: descr
+     * Adds import statements for all classes within the specified package that are referenced
+     * in the current Java file but are missing from the file's import list. This ensures that
+     * the moved file has the necessary imports to resolve unqualified class references from
+     * the original package.
      *
+     * NOTES:
+     * 1. **REQUIRES the write action scope**.
+     *
+     * @param fromPackage The fully qualified name of the package that contains the classes
+     *                    to be imported into the current Java file.
      */
     private fun PsiJavaFile.importClassesFromPackage(fromPackage: String) {
         val psiFile = this
@@ -429,6 +464,20 @@ class MoveFileToAiSuggestedDirectoryTransformation(
         }
     }
 
+    /**
+     * Moves the current `VirtualFile` to a specified directory and updates its package statement
+     * according to the provided package name.
+     *
+     * NOTES:
+     * 1. **REQUIRES the write action scope**.
+     *
+     * @param project The IntelliJ Platform `Project` in which the file resides.
+     * @param requestor The entity requesting the move operation, used to ensure proper permissions.
+     * @param where The destination `VirtualFile` directory where the file should be moved.
+     * @param packageName The new package name to update in the file after the move.
+     * @return A `Result` object containing the updated `PsiJavaFile` if the operation succeeds,
+     *         or a failure if the file cannot be moved or updated.
+     */
     private fun VirtualFile.moveAndUpdatePackage(
         project: Project,
         requestor: Any,
@@ -455,6 +504,9 @@ class MoveFileToAiSuggestedDirectoryTransformation(
      * that have been moved to a different package. This method ensures that the imports
      * are updated or added based on whether the referenced classes are from a different package
      * or the same package as the current file.
+     *
+     * NOTES:
+     * 1. **REQUIRES the write action scope**.
      *
      * @param referencedClasses A set of `PsiClass` instances representing the classes that
      *                          need to have their import statements updated in the current file.
