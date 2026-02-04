@@ -456,8 +456,8 @@ class MoveFileToAiSuggestedDirectoryTransformation(
 
             logger.info("Adding a new import into the import list of ${psiFile.name}: `${importStatement.text}` (for the qualified name: ${reference.qualifiedName})")
 
-            // TODO: check that this import is not present already
-            if (importList != null) {
+            // import list doesn't contain this import statement
+            if (importList != null && importList.importStatements.none { it.qualifiedName == importStatement.qualifiedName }) {
                 importList.add(importStatement)
                 logger.info("  - Added import for `${reference.qualifiedName}`: ${importStatement.text}")
             }
