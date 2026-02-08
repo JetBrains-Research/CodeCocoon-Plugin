@@ -17,18 +17,6 @@ repositories {
     intellijPlatform {
         defaultRepositories()
     }
-    if (spaceCredentialsProvided()) {
-        maven {
-            url = uri("https://packages.jetbrains.team/maven/p/testing-agents/grazie-llm-interaction")
-            credentials {
-                username = spaceUsername
-                password = spacePassword
-            }
-        }
-        maven {
-            url = uri("https://packages.jetbrains.team/maven/p/grazi/grazie-platform-public")
-        }
-    }
 }
 
 kotlin {
@@ -41,16 +29,6 @@ dependencies {
         val platformVersion: String by project
         println("[:core Module]: creating platform=$platformType with version=$platformVersion")
         create(platformType, platformVersion)
-    }
-    implementation("ai.koog:koog-agents:0.5.0") {
-        exclude(group = "org.jetbrains.kotlinx", module = "kotlinx-coroutines-core")
-    }
-    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3")
-    implementation(kotlin("reflect"))
-    if (spaceCredentialsProvided()) {
-        implementation("org.jetbrains.research:grazie-llm-interaction:1.0-SNAPSHOT") {
-            exclude(group = "org.jetbrains.kotlinx", module = "kotlinx-coroutines-core")
-        }
     }
 
     testImplementation(kotlin("test"))

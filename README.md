@@ -33,6 +33,12 @@ transformations:
         - "src/main"
 ```
 
+## Built-in transformations
+
+- Rename Method (id: `rename-method-transformation`)
+  - Renames Java methods to an LLM-suggested, semantically similar name and updates usages/overrides.
+  - Skips: overrides, tests, interface methods extending library interfaces, annotated methods, constructors, toString/get*/set*/is*, public methods with no refs, and methods referenced from non-Java/Kotlin files.
+
 ## Template ToDo list
 - [x] Create a new [IntelliJ Platform Plugin Template][template] project.
 - [ ] Get familiar with the [template documentation][template].
