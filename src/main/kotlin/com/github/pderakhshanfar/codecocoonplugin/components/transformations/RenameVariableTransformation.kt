@@ -137,7 +137,7 @@ class RenameVariableTransformation(
             }
         }
 
-        val llm = LLM.fromGrazie(OpenAIModels.Chat.GPT5Mini, System.getenv("GRAZIE_TOKEN"))
+        val llm = LLM.fromGrazie(OpenAIModels.Chat.GPT5Mini)
         val result = llm.structuredRequest<VariableName>(
             prompt = varRenamePrompt
         )
