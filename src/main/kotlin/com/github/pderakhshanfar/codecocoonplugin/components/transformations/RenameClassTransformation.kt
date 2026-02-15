@@ -3,30 +3,27 @@ package com.github.pderakhshanfar.codecocoonplugin.components.transformations
 import ai.koog.prompt.dsl.prompt
 import ai.koog.prompt.executor.clients.openai.OpenAIModels
 import com.github.pderakhshanfar.codecocoonplugin.common.LLM
+import com.github.pderakhshanfar.codecocoonplugin.components.transformations.IntelliJAwareTransformation.Companion.withReadAction
 import com.github.pderakhshanfar.codecocoonplugin.executor.TransformationResult
 import com.github.pderakhshanfar.codecocoonplugin.intellij.logging.withStdout
 import com.github.pderakhshanfar.codecocoonplugin.intellij.psi.document
 import com.github.pderakhshanfar.codecocoonplugin.java.JavaTransformation
+import com.intellij.openapi.application.ApplicationManager
+import com.intellij.openapi.application.readAction
 import com.intellij.openapi.diagnostic.thisLogger
+import com.intellij.openapi.progress.ProcessCanceledException
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.roots.ProjectFileIndex
 import com.intellij.openapi.vfs.VirtualFile
-import com.intellij.psi.JavaPsiFacade
-import com.intellij.psi.PsiClass
-import com.intellij.psi.PsiElement
-import com.intellij.psi.PsiFile
-import com.intellij.psi.PsiJavaFile
-import com.intellij.psi.PsiModifier
-import com.intellij.psi.PsiNameHelper
-import com.intellij.psi.PsiRecursiveElementVisitor
-import com.intellij.psi.search.GlobalSearchScope
+import com.intellij.psi.*
 import com.intellij.psi.search.searches.ReferencesSearch
+import com.intellij.refactoring.rename.RenameProcessor
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.Serializable
 
 class RenameClassTransformation(
     override val config: Map<String, Any>
-) : JavaTransformation, IntelliJAwareTransformation {
+) : JavaTransformation, SelfManagedTransformation() {
     override val id: String = ID
     override val description: String = "Renames a class and all of its usages/references"
     private val logger = thisLogger().withStdout()
@@ -35,35 +32,39 @@ class RenameClassTransformation(
         psiFile: PsiFile, virtualFile: VirtualFile
     ): TransformationResult {
         val result = try {
-            val document = psiFile.document()
+            val document = withReadAction { psiFile.document() }
             val modifiedFiles = mutableSetOf<PsiFile>()
             val value = if (document != null) {
-                val eligibleClasses: List<PsiClass> = findAllValidClasses(psiFile)
+                val eligibleClasses: List<PsiClass> = withReadAction { findAllValidClasses(psiFile) }
 
                 if (eligibleClasses.isEmpty()) {
                     return TransformationResult.Skipped("No matching classes found in ${virtualFile.name}")
                 }
 
-                val selectedRenames = eligibleClasses.mapNotNull { psiClass ->
-                    runBlocking {
-                        val suggestions = getNewClassNames(psiClass)
-                        val chosen = suggestions.firstOrNull { isNameAvailable(psiClass, it) }
-                        if (chosen == null) {
-                            logger.warn("Skipping class ${psiClass.name} in ${psiFile.virtualFile?.path} — no available suggestion out of ${suggestions.size} tried")
-                            null
-                        } else {
-                            psiClass to chosen
+                logger.info("  ⏲ Generating rename suggestions for ${eligibleClasses.size} classes...")
+
+                val renameSuggestions = runBlocking {
+                    eligibleClasses.associateWith { psiClass -> getNewClassNames(psiClass) }
+                }
+
+                val successfulRenames = eligibleClasses.mapNotNull { psiClass ->
+                    val className = withReadAction { psiClass.name }
+                    val suggestions = renameSuggestions[psiClass] ?: return@mapNotNull null
+
+                    // Try each suggestion until one succeeds
+                    for (suggestion in suggestions) {
+                        val files = tryRenameClassAndUsages(psiFile.project, psiClass, suggestion)
+                        if (files != null) {
+                            modifiedFiles.addAll(files)
+                            return@mapNotNull psiClass to suggestion
                         }
                     }
+                    // No valid suggestion worked
+                    logger.info("  ⊘ Skipped renaming class $className, with suggestions: $suggestions")
+                    null
                 }
 
-                // Rename each class and all its usages across the project
-                for ((psiClass, newName) in selectedRenames) {
-                    val files = renameClassAndUsages(psiFile.project, psiClass, newName)
-                    modifiedFiles.addAll(files)
-                }
-
-                val renamedCount = selectedRenames.size
+                val renamedCount = successfulRenames.size
                 val totalCandidates = eligibleClasses.size
                 val skipped = totalCandidates - renamedCount
                 TransformationResult.Success(
@@ -85,13 +86,28 @@ class RenameClassTransformation(
     @Serializable
     private data class ClassNameSuggestions(val suggestions: List<String>)
 
+    private data class ClassContext(
+        val classType: String,
+        val className: String,
+        val methodNames: List<String>,
+        val fieldNames: List<String>
+    )
+
     private suspend fun getNewClassNames(psiClass: PsiClass, count: Int = DEFAULT_SUGGESTED_NAMES_SIZE): List<String> {
-        val classType = when {
-            psiClass.isInterface -> "interface"
-            psiClass.isEnum -> "enum class"
-            psiClass.hasModifierProperty(PsiModifier.ABSTRACT) -> "abstract class"
-            else -> "class"
+        val context = readAction {
+            val type = when {
+                psiClass.isInterface -> "interface"
+                psiClass.isEnum -> "enum class"
+                psiClass.hasModifierProperty(PsiModifier.ABSTRACT) -> "abstract class"
+                else -> "class"
+            }
+            val name = psiClass.name ?: "Unknown"
+            val methods = psiClass.methods.mapNotNull { it.name }
+            val fields = psiClass.allFields.mapNotNull { it.name }
+
+            ClassContext(type, name, methods, fields)
         }
+
         val classRenamePrompt = prompt("class-rename-prompt") {
             system {
                 +"You are an agent that proposes semantically similar Java class names."
@@ -99,9 +115,9 @@ class RenameClassTransformation(
                 +"Your output will be parsed into JSON; strictly follow the required structure."
             }
             user {
-                +"The name of the $classType is: ${psiClass.name}"
-                if (psiClass.methods.isNotEmpty()) +"The methods in the class are: ${psiClass.methods.joinToString(", ") { it.name }}"
-                if (psiClass.allFields.isNotEmpty()) +"All fields in the class are: ${psiClass.allFields.joinToString(", ") { it.name }}"
+                +"The name of the ${context.classType} is: ${context.className}"
+                if (context.methodNames.isNotEmpty()) +"The methods in the class are: ${context.methodNames.joinToString(", ")}"
+                if (context.fieldNames.isNotEmpty()) +"All fields in the class are: ${context.fieldNames.joinToString(", ")}"
                 +"Return a JSON object with field 'suggestions' which is an ordered array of $count Java identifiers, from most to least fitting."
                 +"Every suggestion must be a valid Java identifier and semantically similar to the original name."
             }
@@ -132,75 +148,39 @@ class RenameClassTransformation(
         return if (normalized.contains(internalFallback)) normalized else normalized + internalFallback
     }
 
-    private fun isNameAvailable(psiClass: PsiClass, newName: String): Boolean {
-        val project = psiClass.project
-        val packageName = (psiClass.containingFile as? PsiJavaFile)?.packageName ?: ""
-
-        val nameHelper = PsiNameHelper.getInstance(project)
-
-        if (!nameHelper.isIdentifier(newName)) return false
-
-        // Construct the full qualified name for the potential new class
-        val newQualifiedName = if (packageName.isEmpty()) newName else "$packageName.$newName"
-
-        // Check if a class with this qualified name already exists in the project
-        val existingClass = JavaPsiFacade.getInstance(project)
-            .findClass(newQualifiedName, GlobalSearchScope.allScope(project))
-
-        if (existingClass != null) {
-            return false // A class with this name already exists in this package
-        }
-
-        // 3. Check for Inner Class collisions
-        // If the class is nested, check its siblings within the parent class
-        val parent = psiClass.parent
-        if (parent is PsiClass) {
-            val siblingClass = parent.findInnerClassByName(newName, false)
-            if (siblingClass != null) return false
-        }
-
-        return true
-    }
-
-    /**
-     * Renames a class and updates all its usages within the project, ensuring consistency
-     * across the codebase. The method modifies the class name and refactors all references
-     * to reflect the new name. It also (automatically) renames the containing file.
-     *
-     * @param project IntelliJ project within which the class and its usages are being refactored.
-     * @param psiClass The class to be renamed.
-     * @param newName The new name to be assigned to the class.
-     * @return A set of PsiFiles that were modified during the renaming process.
-     */
-    private fun renameClassAndUsages(
+    private fun tryRenameClassAndUsages(
         project: Project, psiClass: PsiClass, newName: String
-    ): MutableSet<PsiFile> {
-        val searchScope = GlobalSearchScope.projectScope(project)
-        val allReferences = ReferencesSearch.search(psiClass, searchScope).findAll().toList()
-
-        val modifiedFiles = mutableSetOf<PsiFile>()
-
-        val oldClassName = psiClass.name
-
-        // This also renames the containing file
-        psiClass.setName(newName)
-        psiClass.containingFile?.let { modifiedFiles.add(it) }
-
-        for (reference in allReferences) {
-            var containingFile: String = reference.element.containingFile?.virtualFile?.path ?: "unknown"
-            if (containingFile.contains("/src/")) {
-                containingFile = containingFile.substringAfter("/src/")
+    ): MutableSet<PsiFile>? {
+        return try {
+            // Creating RenameProcessor requires read access for PSI validation
+            val renameProcessor = withReadAction {
+                RenameProcessor(
+                    /* project = */ project,
+                    /* element = */ psiClass,
+                    /* newName = */ newName,
+                    /* isSearchInComments= */ true,
+                    /* isSearchTextOccurrences = */ false
+                )
             }
-            logger.info("      -> Renaming reference in $containingFile")
-            try {
-                reference.handleElementRename(newName)
-                reference.element.containingFile?.let { modifiedFiles.add(it) }
-            } catch (_: Exception) {
-                throw Exception("Could not rename reference of class ${oldClassName} to ${newName} at ${reference.element.containingFile?.virtualFile?.path}:${reference.element.textOffset}")
+
+            ApplicationManager.getApplication().invokeAndWait { renameProcessor.run() }
+
+            val modifiedFiles = withReadAction {
+                val files = mutableSetOf<PsiFile>()
+                renameProcessor.findUsages().forEach { usageInfo ->
+                    usageInfo.file?.let { files.add(it) }
+                }
+                psiClass.containingFile?.let { files.add(it) }
+                files
             }
+            modifiedFiles
+        } catch (e: ProcessCanceledException) {
+            // Must rethrow control flow exceptions
+            throw e
+        } catch (_: Exception) {
+            // Rename failed (conflicts, PSI errors, etc.) - return null to try the next suggestion
+            null
         }
-
-        return modifiedFiles
     }
 
 
