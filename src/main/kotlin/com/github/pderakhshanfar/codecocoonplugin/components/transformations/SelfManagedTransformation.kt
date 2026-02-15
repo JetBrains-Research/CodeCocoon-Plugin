@@ -9,4 +9,11 @@ package com.github.pderakhshanfar.codecocoonplugin.components.transformations
  * This is used for transformations that use IntelliJ Platform's refactoring processors (like RenameProcessor),
  * which manage their own write actions internally.
  */
-interface SelfManagedTransformation : IntelliJAwareTransformation
+interface SelfManagedTransformation : IntelliJAwareTransformation {
+    companion object {
+        init {
+            // Disable all refactoring dialogs
+            System.setProperty("ide.performance.skip.refactoring.dialogs", "true")
+        }
+    }
+}

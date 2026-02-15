@@ -8,7 +8,6 @@ import com.github.pderakhshanfar.codecocoonplugin.executor.TransformationResult
 import com.github.pderakhshanfar.codecocoonplugin.intellij.psi.psiFile
 import com.github.pderakhshanfar.codecocoonplugin.intellij.vfs.findVirtualFile
 import com.github.pderakhshanfar.codecocoonplugin.transformation.Transformation
-import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.ReadResult
 import com.intellij.openapi.application.readAction
 import com.intellij.openapi.application.readAndWriteAction
@@ -56,12 +55,8 @@ class IntelliJTransformationExecutor(
                 project.psiFile(virtualFile)
             } ?: return TransformationResult.Failure("Cannot get PSI for file: ${context.relativePath}")
 
-            // Run transformation on EDT (invokeAndWait is synchronous, so no need for AtomicReference)
-            var result: TransformationResult? = null
-            ApplicationManager.getApplication().invokeAndWait {
-                result = transformation.apply(psiFile, virtualFile)
-            }
-            return result!!
+            // Run transformation directly - RenameProcessor handles EDT requirements internally
+            return transformation.apply(psiFile, virtualFile)
         }
 
         // Regular transformations need writeCommandAction wrapper
