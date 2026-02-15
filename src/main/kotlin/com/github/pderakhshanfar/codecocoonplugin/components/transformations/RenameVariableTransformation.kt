@@ -3,22 +3,27 @@ package com.github.pderakhshanfar.codecocoonplugin.components.transformations
 import ai.koog.prompt.dsl.prompt
 import ai.koog.prompt.executor.clients.openai.OpenAIModels
 import com.github.pderakhshanfar.codecocoonplugin.common.LLM
+import com.github.pderakhshanfar.codecocoonplugin.components.transformations.IntelliJAwareTransformation.Companion.withReadAction
 import com.github.pderakhshanfar.codecocoonplugin.executor.TransformationResult
+import com.github.pderakhshanfar.codecocoonplugin.intellij.logging.withStdout
 import com.github.pderakhshanfar.codecocoonplugin.intellij.psi.document
 import com.github.pderakhshanfar.codecocoonplugin.java.JavaTransformation
+import com.intellij.openapi.application.ApplicationManager
+import com.intellij.openapi.application.readAction
+import com.intellij.openapi.diagnostic.thisLogger
+import com.intellij.openapi.progress.ProcessCanceledException
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.roots.ProjectFileIndex
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.psi.*
-import com.intellij.psi.search.GlobalSearchScope
-import com.intellij.psi.search.searches.ReferencesSearch
 import com.intellij.psi.util.PsiTreeUtil
+import com.intellij.refactoring.rename.RenameProcessor
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.Serializable
 
 class RenameVariableTransformation(
     override val config: Map<String, Any>
-) : JavaTransformation, IntelliJAwareTransformation {
+) : JavaTransformation, SelfManagedTransformation {
     override val id: String = ID
     override val description: String = "Renames variables (fields, locals, parameters) and their usages"
     private val logger = thisLogger().withStdout()
@@ -27,10 +32,10 @@ class RenameVariableTransformation(
         psiFile: PsiFile, virtualFile: VirtualFile
     ): TransformationResult {
         val result = try {
-            val document = psiFile.document()
+            val document = withReadAction { psiFile.document() }
             val modifiedFiles = mutableSetOf<PsiFile>()
             val value = if (document != null) {
-                val eligibleVariables: List<PsiVariable> = findAllValidVariables(psiFile)
+                val eligibleVariables: List<PsiVariable> = withReadAction { findAllValidVariables(psiFile) }
 
                 if (eligibleVariables.isEmpty()) {
                     return TransformationResult.Skipped("No matching variables found in ${virtualFile.name}")
@@ -45,30 +50,33 @@ class RenameVariableTransformation(
                 // Create a map from variable name to suggestions for easy lookup
                 val suggestionMap = renameSuggestions.associateBy { it.originalName }
 
-                // Process each variable and find the first available suggestion
-                val newNames = eligibleVariables.mapNotNull { psiVar ->
-                    val varName = psiVar.name ?: return@mapNotNull null
-                    val suggestions = suggestionMap[varName]?.suggestions ?: return@mapNotNull null
+                // Try renaming each variable with suggestions until one succeeds
+                val successfulRenames = eligibleVariables.mapNotNull { psiVar ->
+                    val (varName, validSuggestions) = withReadAction {
+                        val name = psiVar.name ?: return@withReadAction null
+                        val suggestions = suggestionMap[name]?.suggestions ?: return@withReadAction null
+                        val nameHelper = PsiNameHelper.getInstance(psiFile.project)
+                        val validated = buildSuggestionList(suggestions, psiFile.project)
+                            .filter { nameHelper.isIdentifier(it) }
 
-                    // Normalize and validate suggestions
-                    val validSuggestions = buildSuggestionList(suggestions, psiVar.project)
+                        if (validated.isEmpty()) return@withReadAction null
+                        name to validated
+                    } ?: return@mapNotNull null
 
-                    // Find the first available suggestion
-                    val chosenName = validSuggestions.firstOrNull { isNameAvailable(psiVar, it) }
-
-                    if (chosenName != null) {
-                        psiVar to chosenName
-                    } else {
-                        null // Skip if no valid suggestions available
+                    // Try each suggestion until one succeeds (no conflicts)
+                    for (suggestion in validSuggestions) {
+                        val files = tryRenameVariableAndUsages(psiFile.project, psiVar, suggestion)
+                        if (files != null) {
+                            modifiedFiles.addAll(files)
+                            return@mapNotNull psiVar to suggestion
+                        }
                     }
+                    // No valid suggestion worked
+                    logger.info("    ⊘ Skipped renaming variable $varName, with suggestions: ${suggestionMap[varName]?.suggestions}")
+                    null
                 }
 
-                for ((psiVar, newName) in newNames) {
-                    val files = renameVariableAndUsages(psiFile.project, psiVar, newName)
-                    modifiedFiles.addAll(files)
-                }
-
-                val renamedCount = newNames.size
+                val renamedCount = successfulRenames.size
                 val totalCandidates = eligibleVariables.size
                 val skipped = totalCandidates - renamedCount
                 TransformationResult.Success(
@@ -168,7 +176,7 @@ class RenameVariableTransformation(
     ): List<VariableRenaming> {
         if (variables.isEmpty()) return emptyList()
 
-        val contexts = variables.map { buildVariableContext(it) }
+        val contexts = readAction { variables.map { buildVariableContext(it) } }
 
         val varRenamePrompt = prompt("variable-rename-batch-prompt") {
             system {
@@ -206,58 +214,38 @@ class RenameVariableTransformation(
         return result?.renamings ?: emptyList()
     }
 
-    private fun isNameAvailable(variable: PsiVariable, newName: String): Boolean {
-        val project = variable.project
-        val nameHelper = PsiNameHelper.getInstance(project)
-
-        // 1. Basic Identifier Check
-        if (!nameHelper.isIdentifier(newName)) return false
-
-        // 2. Scope Collision Check
-        // We need to ensure 'newName' isn't already used in the same scope (e.g., same method block)
-        val resolveHelper = JavaPsiFacade.getInstance(project).resolveHelper
-
-        // Find the scope in which the variable is valid (Method, Loop, or Class)
-        val scope = PsiTreeUtil.getParentOfType(variable, PsiElement::class.java) ?: return false
-
-        val existingVariable = resolveHelper.resolveReferencedVariable(newName, scope)
-
-        // If it resolves to something, we have a collision
-        if (existingVariable != null) {
-            return false
-        }
-
-        // 3. Sibling Check (specifically for fields to avoid duplicate field names)
-        if (variable is PsiField) {
-            val containingClass = variable.containingClass
-            val existingField = containingClass?.findFieldByName(newName, false)
-            if (existingField != null) return false
-        }
-
-        return true
-    }
-
-    private fun renameVariableAndUsages(
+    private fun tryRenameVariableAndUsages(
         project: Project, psiVariable: PsiVariable, newName: String
-    ): MutableSet<PsiFile> {
-        val searchScope = GlobalSearchScope.projectScope(project)
-        val allReferences = ReferencesSearch.search(psiVariable, searchScope).findAll().toList()
-
-        val modifiedFiles = mutableSetOf<PsiFile>()
-
-        psiVariable.setName(newName)
-        psiVariable.containingFile?.let { modifiedFiles.add(it) }
-
-        for (reference in allReferences) {
-            try {
-                reference.handleElementRename(newName)
-                reference.element.containingFile?.let { modifiedFiles.add(it) }
-            } catch (_: Exception) {
-                throw Exception("Could not rename reference at ${reference.element.containingFile?.virtualFile?.path}:${reference.element.textOffset}")
+    ): MutableSet<PsiFile>? {
+        return try {
+            val renameProcessor = withReadAction { RenameProcessor(
+                    /* project = */ project,
+                    /* element = */ psiVariable,
+                    /* newName = */ newName,
+                    /* isSearchInComments= */ true,
+                    /* isSearchTextOccurrences = */ false
+                )
             }
-        }
 
-        return modifiedFiles
+            ApplicationManager.getApplication().invokeAndWait { renameProcessor.run() }
+
+            val modifiedFiles = withReadAction {
+                val files = mutableSetOf<PsiFile>()
+                renameProcessor.findUsages().forEach { usageInfo ->
+                    usageInfo.file?.let { files.add(it) }
+                }
+                psiVariable.containingFile?.let { files.add(it) }
+                files
+            }
+
+            modifiedFiles
+        } catch (e: ProcessCanceledException) {
+            // Must rethrow control flow exceptions
+            throw e
+        } catch (e: Exception) {
+            // Rename failed (conflicts, PSI errors, etc.) - return null to try the next suggestion
+            null
+        }
     }
 
     private fun findAllValidVariables(psiFile: PsiFile): List<PsiVariable> {
