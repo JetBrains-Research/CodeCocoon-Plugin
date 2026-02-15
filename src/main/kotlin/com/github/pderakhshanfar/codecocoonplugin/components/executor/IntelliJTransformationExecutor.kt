@@ -2,12 +2,15 @@ package com.github.pderakhshanfar.codecocoonplugin.components.executor
 
 import com.github.pderakhshanfar.codecocoonplugin.common.FileContext
 import com.github.pderakhshanfar.codecocoonplugin.components.transformations.IntelliJAwareTransformation
+import com.github.pderakhshanfar.codecocoonplugin.components.transformations.SelfManagedTransformation
 import com.github.pderakhshanfar.codecocoonplugin.executor.TransformationExecutor
 import com.github.pderakhshanfar.codecocoonplugin.executor.TransformationResult
 import com.github.pderakhshanfar.codecocoonplugin.intellij.psi.psiFile
 import com.github.pderakhshanfar.codecocoonplugin.intellij.vfs.findVirtualFile
 import com.github.pderakhshanfar.codecocoonplugin.transformation.Transformation
+import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.ReadResult
+import com.intellij.openapi.application.readAction
 import com.intellij.openapi.application.readAndWriteAction
 import com.intellij.openapi.command.writeCommandAction
 import com.intellij.openapi.project.Project
@@ -46,6 +49,22 @@ class IntelliJTransformationExecutor(
             ?: return TransformationResult.Failure(
                 "Project '${project.name}' doesn't contain file: ${context.relativePath}")
 
+        // Self-managed transformations handle their own write actions/commands
+        if (transformation is SelfManagedTransformation) {
+            // Get PSI file in a read action
+            val psiFile = readAction {
+                project.psiFile(virtualFile)
+            } ?: return TransformationResult.Failure("Cannot get PSI for file: ${context.relativePath}")
+
+            // Run transformation on EDT (invokeAndWait is synchronous, so no need for AtomicReference)
+            var result: TransformationResult? = null
+            ApplicationManager.getApplication().invokeAndWait {
+                result = transformation.apply(psiFile, virtualFile)
+            }
+            return result!!
+        }
+
+        // Regular transformations need writeCommandAction wrapper
         return readAndWriteAction {
             val psiFile = project.psiFile(virtualFile)
                 ?: return@readAndWriteAction ReadResult.value(
