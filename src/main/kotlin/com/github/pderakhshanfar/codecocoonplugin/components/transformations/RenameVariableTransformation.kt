@@ -35,35 +35,43 @@ class RenameVariableTransformation(
                     return TransformationResult.Skipped("No matching variables found in ${virtualFile.name}")
                 }
 
-                val newNames = eligibleVariables.mapIndexedNotNull { index, psiVar ->
-                    print("\r  ⏲ LLM renaming request ${index + 1}/${eligibleVariables.size} in progress...")
-                    System.out.flush()
-                    runBlocking {
-                        val suggestedName = getNewVariableName(psiVar)
+                print("  ⏲ Generating rename suggestions for ${eligibleVariables.size} variables...")
 
-                        // Validation check
-                        if (isNameAvailable(psiVar, suggestedName)) {
-                            psiVar to suggestedName
-                        } else {
-                            // Fallback: try adding a generic suffix
-                            val fallbackName = "${suggestedName}Val"
-                            if (isNameAvailable(psiVar, fallbackName)) {
-                                psiVar to fallbackName
-                            } else {
-                                null // Skip to avoid errors
-                            }
-                        }
+                val renameSuggestions = runBlocking {
+                    getAllVariableRenameSuggestions(eligibleVariables)
+                }
+
+                // Create a map from variable name to suggestions for easy lookup
+                val suggestionMap = renameSuggestions.associateBy { it.originalName }
+
+                // Process each variable and find the first available suggestion
+                val newNames = eligibleVariables.mapNotNull { psiVar ->
+                    val varName = psiVar.name ?: return@mapNotNull null
+                    val suggestions = suggestionMap[varName]?.suggestions ?: return@mapNotNull null
+
+                    // Normalize and validate suggestions
+                    val validSuggestions = buildSuggestionList(suggestions, psiVar.project)
+
+                    // Find the first available suggestion
+                    val chosenName = validSuggestions.firstOrNull { isNameAvailable(psiVar, it) }
+
+                    if (chosenName != null) {
+                        psiVar to chosenName
+                    } else {
+                        null // Skip if no valid suggestions available
                     }
                 }
-                println()
 
                 for ((psiVar, newName) in newNames) {
                     val files = renameVariableAndUsages(psiFile.project, psiVar, newName)
                     modifiedFiles.addAll(files)
                 }
 
+                val renamedCount = newNames.size
+                val totalCandidates = eligibleVariables.size
+                val skipped = totalCandidates - renamedCount
                 TransformationResult.Success(
-                    message = "Renamed ${newNames.size} variables in ${virtualFile.name}",
+                    message = "Renamed ${renamedCount}/${totalCandidates} variables in ${virtualFile.name}${if (skipped > 0) " (skipped: $skipped)" else ""}",
                     filesModified = modifiedFiles.size
                 )
             } else {
@@ -79,20 +87,47 @@ class RenameVariableTransformation(
     }
 
     @Serializable
-    data class VariableName(val name: String)
+    private data class VariableRenaming(
+        val originalName: String,
+        val suggestions: List<String>
+    )
 
-    private suspend fun getNewVariableName(psiVariable: PsiVariable): String {
+    @Serializable
+    private data class VariableRenameSuggestions(
+        val renamings: List<VariableRenaming>
+    )
+
+    private fun buildSuggestionList(rawSuggestions: List<String>, project: Project): List<String> {
+        val nameHelper = PsiNameHelper.getInstance(project)
+
+        return rawSuggestions
+            .asSequence()
+            .map { it.trim() }
+            .filter { it.isNotEmpty() && nameHelper.isIdentifier(it) }
+            .distinct()
+            .toList()
+    }
+
+    private data class VariableContext(
+        val variable: PsiVariable,
+        val name: String,
+        val typeName: String,
+        val context: String,
+        val namingConvention: String,
+        val assignedType: String?
+    )
+
+    private fun buildVariableContext(psiVariable: PsiVariable): VariableContext {
         val isFinal = psiVariable.hasModifierProperty(PsiModifier.FINAL)
         val isStatic = psiVariable.hasModifierProperty(PsiModifier.STATIC)
         val typeName = psiVariable.type.presentableText
 
-       // Get the specific class name if it's an assignment (e.g., Cat cat = new Cat())
-        val assignedType = if (psiVariable is PsiLocalVariable) {
-            psiVariable.initializer?.let { init ->
-                if (init is PsiNewExpression) init.classOrAnonymousClassReference?.referenceName
-                else null
-            }
-        } else null
+        // Get the specific class name if it's an assignment (e.g., Cat cat = new Cat())
+        val assignedType = (psiVariable as? PsiLocalVariable)
+            ?.initializer
+            ?.let { it as? PsiNewExpression }
+            ?.classOrAnonymousClassReference
+            ?.referenceName
 
         val context = when (psiVariable) {
             is PsiField -> {
@@ -100,14 +135,12 @@ class RenameVariableTransformation(
                 "$type in class '${psiVariable.containingClass?.name ?: "Unknown"}'"
             }
             is PsiParameter -> {
-                // Find the method this parameter belongs to
                 val method = PsiTreeUtil.getParentOfType(psiVariable, PsiMethod::class.java)
                 val methodName = method?.name ?: "anonymous"
                 val className = method?.containingClass?.name ?: "Unknown"
                 "${if (isFinal) "Final " else ""}Parameter in method '$methodName' of class '$className'"
             }
             is PsiLocalVariable -> {
-                // Find the block or method containing this local variable
                 val method = PsiTreeUtil.getParentOfType(psiVariable, PsiMethod::class.java)
                 val container = if (method != null) "method '${method.name}'" else "initializer block"
                 val assignmentInfo = if (assignedType != null) " (assigned to a new instance of '$assignedType')" else ""
@@ -118,31 +151,58 @@ class RenameVariableTransformation(
 
         val namingConvention = if (psiVariable is PsiField && isFinal && isStatic) "UPPER_SNAKE_CASE" else "camelCase"
 
-        val varRenamePrompt = prompt("variable-rename-prompt") {
+        return VariableContext(
+            variable = psiVariable,
+            name = psiVariable.name ?: "unknown",
+            typeName = typeName,
+            context = context,
+            namingConvention = namingConvention,
+            assignedType = assignedType
+        )
+    }
+
+    private suspend fun getAllVariableRenameSuggestions(
+        variables: List<PsiVariable>,
+        count: Int = DEFAULT_SUGGESTED_NAMES_SIZE
+    ): List<VariableRenaming> {
+        if (variables.isEmpty()) return emptyList()
+
+        val contexts = variables.map { buildVariableContext(it) }
+
+        val varRenamePrompt = prompt("variable-rename-batch-prompt") {
             system {
                 +"You are an agent used for refactoring Java code for metamorphic testing."
                 +"You specialize in generating semantically similar variable names."
+                +"Your output will be parsed into JSON; strictly follow the required structure."
             }
             user {
-                +"Current Variable Name: ${psiVariable.name}"
-                +"Declared Type: $typeName"
-                +"Structural Context: $context"
-
-                if (assignedType != null && assignedType != typeName) {
-                    +"Note: This variable holds an instance of the specific subclass: $assignedType"
+                +"Generate $count semantically similar name suggestions for each of the following variables:"
+                +""
+                for (ctx in contexts) {
+                    +"Variable: ${ctx.name}"
+                    +"  Declared Type: ${ctx.typeName}"
+                    +"  Context: ${ctx.context}"
+                    if (ctx.assignedType != null && ctx.assignedType != ctx.typeName) {
+                        +"  Note: This variable holds an instance of the specific subclass: ${ctx.assignedType}"
+                    }
+                    +"  Required Format: ${ctx.namingConvention}"
+                    +"\n"
                 }
-
-                +"Required Format: $namingConvention"
-                +"Task: Generate a semantically similar but different name."
+                +"Return a JSON object with field 'renamings' which is an array of objects."
+                +"Each object must have 'originalName' (the current variable name) and 'suggestions' (an array of $count valid Java identifiers)."
+                +"Every suggestion must be semantically similar to the original name and follow the specified naming convention."
+                +"IMPORTANT: The 'originalName' field must exactly match the variable name provided above."
+                +"IMPORTANT: Refrain from using the old variable name in the new name (e.g., do NOT propose `newOwnerId` for `ownerId`)."
             }
         }
 
+
         val llm = LLM.fromGrazie(OpenAIModels.Chat.GPT5Mini)
-        val result = llm.structuredRequest<VariableName>(
+        val result = llm.structuredRequest<VariableRenameSuggestions>(
             prompt = varRenamePrompt
         )
 
-        return result!!.name
+        return result?.renamings ?: emptyList()
     }
 
     private fun isNameAvailable(variable: PsiVariable, newName: String): Boolean {
@@ -245,5 +305,6 @@ class RenameVariableTransformation(
 
     companion object {
         const val ID = "rename-variable-transformation"
+        private const val DEFAULT_SUGGESTED_NAMES_SIZE = 3
     }
 }
