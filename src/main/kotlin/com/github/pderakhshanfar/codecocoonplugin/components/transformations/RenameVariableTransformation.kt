@@ -21,6 +21,7 @@ class RenameVariableTransformation(
 ) : JavaTransformation, IntelliJAwareTransformation {
     override val id: String = ID
     override val description: String = "Renames variables (fields, locals, parameters) and their usages"
+    private val logger = thisLogger().withStdout()
 
     override fun apply(
         psiFile: PsiFile, virtualFile: VirtualFile
@@ -35,7 +36,7 @@ class RenameVariableTransformation(
                     return TransformationResult.Skipped("No matching variables found in ${virtualFile.name}")
                 }
 
-                print("  ⏲ Generating rename suggestions for ${eligibleVariables.size} variables...")
+                logger.info("  ⏲ Generating rename suggestions for ${eligibleVariables.size} variables...")
 
                 val renameSuggestions = runBlocking {
                     getAllVariableRenameSuggestions(eligibleVariables)
@@ -298,7 +299,7 @@ class RenameVariableTransformation(
         }
 
         if (filteredVariables.isNotEmpty()) {
-            println("  ↳ Found ${filteredVariables.size} matching variables in ${psiFile.virtualFile?.path}")
+            logger.info("  ↳ Found ${filteredVariables.size} matching variables in ${psiFile.virtualFile?.path}")
         }
         return filteredVariables
     }
