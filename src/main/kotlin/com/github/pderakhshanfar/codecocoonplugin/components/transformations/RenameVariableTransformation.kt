@@ -269,9 +269,12 @@ class RenameVariableTransformation(
             // 2. Exclude Enum Constants
             if (v is PsiEnumConstant) return@filter false
 
-            // 3. Exclude Library/Compiled Code
+            // 3. Exclude @Column annotated variables
+            if (v.annotations.any { it.qualifiedName?.contains("Column") == true }) return@filter false
+
+            // 4. Exclude Library/Compiled Code
             if (v !is PsiCompiledElement && v.isPhysical) {
-                // 4. Overrides Check (for fields/parameters)
+                // 5. Overrides Check (for fields/parameters)
                 // If a field overrides a superclass field, renaming it might break polymorphism or hide fields.
                 // Simple heuristic: Only rename private/package-private fields or local vars to stay safe.
                 if (v is PsiField) {
