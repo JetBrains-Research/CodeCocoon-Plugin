@@ -2,7 +2,6 @@ package com.github.pderakhshanfar.codecocoonplugin.components.executor
 
 import com.github.pderakhshanfar.codecocoonplugin.common.FileContext
 import com.github.pderakhshanfar.codecocoonplugin.components.transformations.IntelliJAwareTransformation
-import com.github.pderakhshanfar.codecocoonplugin.components.transformations.SelfManagedTransformation
 import com.github.pderakhshanfar.codecocoonplugin.executor.TransformationExecutor
 import com.github.pderakhshanfar.codecocoonplugin.executor.TransformationResult
 import com.github.pderakhshanfar.codecocoonplugin.intellij.psi.psiFile
@@ -49,13 +48,13 @@ class IntelliJTransformationExecutor(
                 "Project '${project.name}' doesn't contain file: ${context.relativePath}")
 
         // Self-managed transformations handle their own write actions/commands
-        if (transformation is SelfManagedTransformation) {
+        if (transformation.selfManaged()) {
             // Get PSI file in a read action
             val psiFile = readAction {
                 project.psiFile(virtualFile)
             } ?: return TransformationResult.Failure("Cannot get PSI for file: ${context.relativePath}")
 
-            // Run transformation directly - RenameProcessor handles EDT requirements internally
+            // Run transformation directly - self-managed transformations handle EDT requirements internally
             return transformation.apply(psiFile, virtualFile)
         }
 

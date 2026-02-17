@@ -12,6 +12,13 @@ import kotlinx.coroutines.runBlocking
  */
 interface IntelliJAwareTransformation : Transformation {
     /**
+     * Indicates whether this transformation manages its own write actions and commands.
+     *
+     * @return true if the transformation handles its own command/write action context, false otherwise
+     */
+    fun selfManaged(): Boolean = false
+
+    /**
      * Apply the transformation using IntelliJ PSI.
      *
      * @param psiFile The PSI representation of the file
