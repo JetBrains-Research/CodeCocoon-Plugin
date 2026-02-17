@@ -8,6 +8,7 @@ import com.github.pderakhshanfar.codecocoonplugin.intellij.psi.psiFile
 import com.github.pderakhshanfar.codecocoonplugin.intellij.vfs.findVirtualFile
 import com.github.pderakhshanfar.codecocoonplugin.transformation.Transformation
 import com.intellij.openapi.application.ReadResult
+import com.intellij.openapi.application.readAction
 import com.intellij.openapi.application.readAndWriteAction
 import com.intellij.openapi.command.writeCommandAction
 import com.intellij.openapi.project.Project
@@ -46,6 +47,18 @@ class IntelliJTransformationExecutor(
             ?: return TransformationResult.Failure(
                 "Project '${project.name}' doesn't contain file: ${context.relativePath}")
 
+        // Self-managed transformations handle their own write actions/commands
+        if (transformation.selfManaged()) {
+            // Get PSI file in a read action
+            val psiFile = readAction {
+                project.psiFile(virtualFile)
+            } ?: return TransformationResult.Failure("Cannot get PSI for file: ${context.relativePath}")
+
+            // Run transformation directly - self-managed transformations handle EDT requirements internally
+            return transformation.apply(psiFile, virtualFile)
+        }
+
+        // Regular transformations need writeCommandAction wrapper
         return readAndWriteAction {
             val psiFile = project.psiFile(virtualFile)
                 ?: return@readAndWriteAction ReadResult.value(
