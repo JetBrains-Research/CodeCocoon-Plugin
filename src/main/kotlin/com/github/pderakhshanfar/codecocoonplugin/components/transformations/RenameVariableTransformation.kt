@@ -23,7 +23,7 @@ import kotlinx.serialization.Serializable
 
 class RenameVariableTransformation(
     override val config: Map<String, Any>
-) : JavaTransformation, SelfManagedTransformation {
+) : JavaTransformation, SelfManagedTransformation() {
     override val id: String = ID
     override val description: String = "Renames variables (fields, locals, parameters) and their usages"
     private val logger = thisLogger().withStdout()
@@ -242,7 +242,7 @@ class RenameVariableTransformation(
         } catch (e: ProcessCanceledException) {
             // Must rethrow control flow exceptions
             throw e
-        } catch (e: Exception) {
+        } catch (_: Exception) {
             // Rename failed (conflicts, PSI errors, etc.) - return null to try the next suggestion
             null
         }
