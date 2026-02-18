@@ -218,11 +218,13 @@ class RenameVariableTransformation(
         project: Project, psiVariable: PsiVariable, newName: String
     ): MutableSet<PsiFile>? {
         return try {
+            // isSearchInComments needs to be false. If true, it would breaks functionality by changing string literals.
+            // example would be mappings of `PathVariable` from Spring.
             val renameProcessor = withReadAction { RenameProcessor(
                     /* project = */ project,
                     /* element = */ psiVariable,
                     /* newName = */ newName,
-                    /* isSearchInComments= */ true,
+                    /* isSearchInComments= */ false,
                     /* isSearchTextOccurrences = */ false
                 )
             }
