@@ -41,7 +41,7 @@ class MoveFileToNewDirectoryTransformationImpl {
         var modifiedFilesCount = 0
         WriteCommandAction.runWriteCommandAction<Unit>(project) {
             /**
-             * STEP 1: Import Class From The Same Package
+             * STEP 1: Import Classes From The Same Package
              *
              * Rationale:
              * Import referenced classes from the same package BEFORE moving this file,
