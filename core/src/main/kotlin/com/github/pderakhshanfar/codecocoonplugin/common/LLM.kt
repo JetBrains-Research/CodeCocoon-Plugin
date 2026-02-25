@@ -22,7 +22,7 @@ class LLM(
     val executor: PromptExecutor,
 ) {
     companion object {
-        suspend fun fromGrazie(model: LLModel, token: String) : LLM {
+        suspend fun fromGrazie(model: LLModel, token: String = System.getenv("GRAZIE_TOKEN")) : LLM {
             if (!grazieIsAvailable()) throw IllegalStateException("Grazie is not available")
             return LLM(model = convertModel(model), executor = createExecutor(token))
         }

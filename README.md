@@ -38,6 +38,9 @@ transformations:
 - Rename Method (id: `rename-method-transformation`)
   - Renames Java methods to an LLM-suggested, semantically similar name and updates usages/overrides.
   - Skips: overrides, tests, interface methods extending library interfaces, annotated methods, constructors, toString/get*/set*/is*, public methods with no refs, and methods referenced from non-Java/Kotlin files.
+- Rename Class (id: `rename-class-transformation`)
+  - Renames Java classes to an LLM-suggested, semantically similar name and updates usages/overrides.
+  - Skips: classes referenced from non-Java files, test class names and annotated classes.
 
 ## Template ToDo list
 - [x] Create a new [IntelliJ Platform Plugin Template][template] project.
