@@ -53,9 +53,7 @@ class RenameMethodTransformation(
                 logger.info("  ⏲ Generating rename suggestions for ${publicMethods.size} methods...")
 
                 val renameSuggestions = runBlocking {
-                    publicMethods.associate { method ->
-                        method to getNewMethodNames(method)
-                    }
+                    publicMethods.associateWith { method -> getNewMethodNames(method) }
                 }
 
                 // Try renaming each method with suggestions until one succeeds
@@ -157,6 +155,7 @@ class RenameMethodTransformation(
         project: Project, method: PsiMethod, newName: String
     ): MutableSet<PsiFile>? {
         return try {
+            val oldName = method.name
             val renameProcessor = IntelliJAwareTransformation.withReadAction {
                 RenameProcessor(
                     /* project = */ project,
@@ -179,13 +178,15 @@ class RenameMethodTransformation(
                 method.containingFile?.let { files.add(it) }
                 files
             }
-
+            logger.info("    • Renamed `$oldName` to `$newName` in ${modifiedFiles.size} files")
             modifiedFiles
         } catch (e: ProcessCanceledException) {
             // Must rethrow control flow exceptions
+            logger.warn("Rename method and usage cancelled: ${e.message}")
             throw e
-        } catch (_: Exception) {
+        } catch (e: Exception) {
             // Rename failed (conflicts, PSI errors, etc.) - return null to try the next suggestion
+            logger.info("    • Skipped ${method.name}:\n      (Reason: ${e.message})")
             null
         }
     }
@@ -245,7 +246,6 @@ class RenameMethodTransformation(
 
         if (filteredMethods.isNotEmpty()) {
             logger.info("  ↳ Found ${filteredMethods.size} matching methods in ${psiFile.virtualFile?.path}")
-            filteredMethods.forEach { logger.info("    • ${it.name}") }
         }
         return filteredMethods
     }
