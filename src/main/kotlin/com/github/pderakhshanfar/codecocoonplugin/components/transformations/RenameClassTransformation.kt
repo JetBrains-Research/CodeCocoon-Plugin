@@ -21,6 +21,11 @@ import com.intellij.refactoring.rename.RenameProcessor
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.Serializable
 
+/**
+ * Renames Java classes to an LLM-suggested, semantically similar name and updates usages/overrides.
+ *
+ * Skips: classes referenced from non-Java files, test class names and annotated classes.
+ */
 class RenameClassTransformation(
     override val config: Map<String, Any>
 ) : JavaTransformation, SelfManagedTransformation() {
@@ -119,6 +124,8 @@ class RenameClassTransformation(
                 if (context.methodNames.isNotEmpty()) +"The methods in the class are: ${context.methodNames.joinToString(", ")}"
                 if (context.fieldNames.isNotEmpty()) +"All fields in the class are: ${context.fieldNames.joinToString(", ")}"
                 +"Return a JSON object with field 'suggestions' which is an ordered array of $count Java identifiers, from most to least fitting."
+                +"Example structure:"
+                +"{\"suggestions\": [\"BestFittingRename\", \"SecondBestFittingRename\", ... ]}"
                 +"Every suggestion must be a valid Java identifier and semantically similar to the original name."
             }
 
@@ -140,9 +147,7 @@ class RenameClassTransformation(
             .distinct()
             .toList()
 
-        if (normalized.isEmpty()) return emptyList()
-
-        val firstSuggestion = normalized.first()
+        val firstSuggestion = normalized.firstOrNull() ?: return emptyList()
         val internalFallback = "${firstSuggestion}Internal"
 
         return if (normalized.contains(internalFallback)) normalized else normalized + internalFallback
@@ -176,13 +181,14 @@ class RenameClassTransformation(
             modifiedFiles
         } catch (e: ProcessCanceledException) {
             // Must rethrow control flow exceptions
+            logger.warn("Rename cancelled:\n${e.message}")
             throw e
-        } catch (_: Exception) {
+        } catch (e: Exception) {
             // Rename failed (conflicts, PSI errors, etc.) - return null to try the next suggestion
+            logger.warn("Rename failed for ${psiClass.name} with error:\n${e.message}")
             null
         }
     }
-
 
     private fun findAllValidClasses(psiFile: PsiFile): List<PsiClass> {
         val classes = mutableListOf<PsiClass>()
@@ -194,7 +200,6 @@ class RenameClassTransformation(
                 }
             }
         })
-
 
         val filteredClasses = classes.filter { cls ->
             val project = cls.project
@@ -212,7 +217,9 @@ class RenameClassTransformation(
             if (fileIndex.isInTestSourceContent(psiFile.virtualFile)) return@filter false
 
             // Basic Filters
-            cls.annotations.isEmpty() && cls.name!!.length > 1
+            val className = cls.name
+            // We need to check for `cls.name.length` > 1 to filter out raw Type classes
+            (className != null) && (className.length > 1) && cls.annotations.isEmpty()
         }
 
         if (filteredClasses.isNotEmpty()) {
