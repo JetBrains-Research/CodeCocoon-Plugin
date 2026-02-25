@@ -41,6 +41,9 @@ transformations:
 - Rename Class (id: `rename-class-transformation`)
   - Renames Java classes to an LLM-suggested, semantically similar name and updates usages/overrides.
   - Skips: classes referenced from non-Java files, test class names and annotated classes.
+- Rename Variable (id: `rename-variable-transformation`)
+  - Renames Java variables to an LLM-suggested, semantically similar name and updates usages.
+  - Skips: variables in test classes, enums, and those declared in library-files.
 
 ## Template ToDo list
 - [x] Create a new [IntelliJ Platform Plugin Template][template] project.
