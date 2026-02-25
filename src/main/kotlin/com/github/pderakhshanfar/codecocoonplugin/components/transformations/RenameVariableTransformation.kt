@@ -21,6 +21,11 @@ import com.intellij.refactoring.rename.RenameProcessor
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.Serializable
 
+/**
+ * Renames Java variables to an LLM-suggested, semantically similar name and updates usages.
+ *
+ * Skips: variables in test classes, enums, and those declared in library-files.
+ */
 class RenameVariableTransformation(
     override val config: Map<String, Any>
 ) : JavaTransformation, SelfManagedTransformation() {
@@ -199,6 +204,7 @@ class RenameVariableTransformation(
                 }
                 +"Return a JSON object with field 'renamings' which is an array of objects."
                 +"Each object must have 'originalName' (the current variable name) and 'suggestions' (an array of $count valid Java identifiers)."
+                +"Example schema: {\"renamings\": [{\"originalName\": \"oldName1\", \"suggestions\": [\"newName1\", \"newName2\", ...]},{\"originalName\": \"oldName2\", \"suggestions\":[\"otherNewName1\", \"otherNewName2\", ...]}]}"
                 +"Every suggestion must be semantically similar to the original name and follow the specified naming convention."
                 +"IMPORTANT: The 'originalName' field must exactly match the variable name provided above."
                 +"IMPORTANT: Refrain from using the old variable name in the new name (e.g., do NOT propose `newOwnerId` for `ownerId`)."
@@ -218,8 +224,10 @@ class RenameVariableTransformation(
         project: Project, psiVariable: PsiVariable, newName: String
     ): MutableSet<PsiFile>? {
         return try {
+            val oldName = psiVariable.name ?: return null
             // isSearchInComments needs to be false. If true, it would breaks functionality by changing string literals.
             // example would be mappings of `PathVariable` from Spring.
+            // `@param [paramName]` definitions in the Javadocs are still being renamed.
             val renameProcessor = withReadAction { RenameProcessor(
                     /* project = */ project,
                     /* element = */ psiVariable,
@@ -240,16 +248,28 @@ class RenameVariableTransformation(
                 files
             }
 
+            val fileCountString = if (modifiedFiles.size > 1) " in ${modifiedFiles.size} files" else ""
+            logger.info("    • Renamed `$oldName` to `$newName`$fileCountString")
             modifiedFiles
         } catch (e: ProcessCanceledException) {
             // Must rethrow control flow exceptions
+            logger.warn("Rename variable and usage cancelled:\n${e.message}")
             throw e
-        } catch (_: Exception) {
+        } catch (e: Exception) {
             // Rename failed (conflicts, PSI errors, etc.) - return null to try the next suggestion
+            logger.info("    • Skipped variable rename for ${psiVariable.name} (Reason:\n${e.message})")
             null
         }
     }
 
+    /**
+     * Identifies and filters valid variables from the provided PSI file based on specific criteria.
+     * The filtering logic excludes variables in test sources, enum constants, variables annotated with `@Column`,
+     * variables from library or compiled code, and public/protected fields that could cause external breaking changes.
+     *
+     * @param psiFile The PSI file to traverse and analyze for variables.
+     * @return A list of PSI variables matching all filtering criteria.
+     */
     private fun findAllValidVariables(psiFile: PsiFile): List<PsiVariable> {
         val variables = mutableListOf<PsiVariable>()
 
