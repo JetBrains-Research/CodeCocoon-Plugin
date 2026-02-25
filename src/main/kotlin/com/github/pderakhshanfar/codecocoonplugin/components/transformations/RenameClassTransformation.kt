@@ -157,6 +157,7 @@ class RenameClassTransformation(
         project: Project, psiClass: PsiClass, newName: String
     ): MutableSet<PsiFile>? {
         return try {
+            val oldName = psiClass.name ?: return null
             // Creating RenameProcessor requires read access for PSI validation
             val renameProcessor = withReadAction {
                 RenameProcessor(
@@ -178,6 +179,7 @@ class RenameClassTransformation(
                 psiClass.containingFile?.let { files.add(it) }
                 files
             }
+            logger.info("    • Renamed `$oldName` to `$newName`")
             modifiedFiles
         } catch (e: ProcessCanceledException) {
             // Must rethrow control flow exceptions
@@ -185,7 +187,7 @@ class RenameClassTransformation(
             throw e
         } catch (e: Exception) {
             // Rename failed (conflicts, PSI errors, etc.) - return null to try the next suggestion
-            logger.warn("Rename failed for ${psiClass.name} with error:\n${e.message}")
+            logger.info("Rename failed for ${psiClass.name} with error:\n${e.message}")
             null
         }
     }
@@ -224,7 +226,6 @@ class RenameClassTransformation(
 
         if (filteredClasses.isNotEmpty()) {
             logger.info("  ↳ Found ${filteredClasses.size} matching classes in ${psiFile.virtualFile?.path}")
-            filteredClasses.forEach { logger.info("    • ${it.name}") }
         }
         return filteredClasses
     }
