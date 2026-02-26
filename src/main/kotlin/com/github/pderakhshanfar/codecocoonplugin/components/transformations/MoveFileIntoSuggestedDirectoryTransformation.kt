@@ -77,7 +77,7 @@ class MoveFileIntoSuggestedDirectoryTransformation private constructor(
             }
 
             val suggestedDirectories = result.getOrThrow()
-            logger.error("    • Received ${suggestedDirectories.size} directory suggestions")
+            logger.info("    • Received ${suggestedDirectories.size} directory suggestions")
 
             return tryToMoveFileIntoSuggestedDirectory(
                 project = psiFile.project,
@@ -152,7 +152,7 @@ class MoveFileIntoSuggestedDirectoryTransformation private constructor(
                     modifiedFiles to summary
                 }
 
-                logger.info("    • Successfully moved $filename into $suggestion!")
+                logger.info("    ↳ Successfully moved $filename into $suggestion!")
                 return TransformationResult.Success(
                     message = "Successfully moved $filename into $suggestion. Usage Summary:\n$usageSummary",
                     filesModified,
