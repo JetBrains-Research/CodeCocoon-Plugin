@@ -65,9 +65,11 @@ class MoveFileIntoSuggestedDirectoryTransformation private constructor(
         }
 
         return try {
+            logger.info("  ⏲ Retrieving suggestion directories for ${virtualFile.name}...")
             val result = directorySuggestionApi.suggest(psiFile, virtualFile)
 
             if (result.isFailure) {
+                logger.error("    ✗ Failed to get directory suggestions")
                 return TransformationResult.Failure(
                     "Failed to get directory suggestions",
                     result.exceptionOrNull(),
@@ -75,13 +77,15 @@ class MoveFileIntoSuggestedDirectoryTransformation private constructor(
             }
 
             val suggestedDirectories = result.getOrThrow()
+            logger.error("    • Received ${suggestedDirectories.size} directory suggestions")
+
             return tryToMoveFileIntoSuggestedDirectory(
                 project = psiFile.project,
                 fileToMove = psiFile,
                 suggestions = suggestedDirectories,
             )
         } catch (e: Exception) {
-            logger.error("Failed to move file ${virtualFile.name}", e)
+            logger.error("  ✗ Failed to move file ${virtualFile.name}", e)
             TransformationResult.Failure("Failed to move file ${virtualFile.path}: ${e.message}", e)
         }
     }
@@ -97,7 +101,9 @@ class MoveFileIntoSuggestedDirectoryTransformation private constructor(
             return TransformationResult.Failure("Cannot move $filename: No directory suggestions received")
         }
 
+        logger.info("  ⏲ Attempting to move $filename into suggestions...")
         for (suggestion in suggestions) {
+            logger.info("    ↳ Attempting $suggestion...")
             val suggestedDirectory = WriteCommandAction.runWriteCommandAction<VirtualFile>(project) {
                 VfsUtil.createDirectories(suggestion)
             }
@@ -146,6 +152,7 @@ class MoveFileIntoSuggestedDirectoryTransformation private constructor(
                     modifiedFiles to summary
                 }
 
+                logger.info("    • Successfully moved $filename into $suggestion!")
                 return TransformationResult.Success(
                     message = "Successfully moved $filename into $suggestion. Usage Summary:\n$usageSummary",
                     filesModified,
@@ -154,6 +161,7 @@ class MoveFileIntoSuggestedDirectoryTransformation private constructor(
         }
 
         // no suggestions fit
+        logger.info("    ✗ Failed to move $filename: None of ${suggestions.size} suggestions fit")
         return TransformationResult.Failure(
             "Failed to move $filename into any of ${suggestions.size} suggested directories:\n${suggestions.joinToString("\n") { "  - $it" }}")
     }
