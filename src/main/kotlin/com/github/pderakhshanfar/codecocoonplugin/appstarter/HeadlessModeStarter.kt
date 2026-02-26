@@ -140,7 +140,7 @@ class HeadlessModeStarter : ApplicationStarter {
         // move file transformation:
         // 1) with AI suggested directory
         TransformationRegistry.register(MoveFileIntoSuggestedDirectoryTransformation.Companion.AI.ID) { config ->
-            MoveFileIntoSuggestedDirectoryTransformation.withAI(config, token = System.getenv("OPENAI_API_KEY"))
+            MoveFileIntoSuggestedDirectoryTransformation.withAI(config, token = System.getenv("GRAZIE_TOKEN"))
         }
         // 2) with a config-defined suggested directory
         TransformationRegistry.register(MoveFileIntoSuggestedDirectoryTransformation.Companion.Config.ID) { config ->

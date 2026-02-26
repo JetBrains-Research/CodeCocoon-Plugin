@@ -10,9 +10,9 @@ import ai.koog.agents.ext.tool.file.ListDirectoryTool
 import ai.koog.agents.ext.tool.file.ReadFileTool
 import ai.koog.agents.features.eventHandler.feature.handleEvents
 import ai.koog.prompt.dsl.Prompt
-import ai.koog.prompt.executor.llms.all.simpleOpenAIExecutor
 import ai.koog.prompt.llm.LLModel
 import ai.koog.rag.base.files.JVMFileSystemProvider
+import com.github.pderakhshanfar.codecocoonplugin.common.LLM
 import com.github.pderakhshanfar.codecocoonplugin.common.ParsingException
 import com.intellij.openapi.diagnostic.thisLogger
 import kotlinx.serialization.Serializable
@@ -31,7 +31,7 @@ internal suspend fun suggestNewDirectoryImpl(
     content: () -> String,
     existingOnly: Boolean = false,
 ): Result<List<String>> {
-    val executor = simpleOpenAIExecutor(token)
+    val executor = LLM.createGrazieExecutor(token)
 
     val agent = AIAgent(
         promptExecutor = executor,

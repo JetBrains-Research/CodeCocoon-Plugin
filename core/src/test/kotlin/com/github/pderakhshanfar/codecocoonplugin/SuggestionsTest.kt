@@ -11,7 +11,7 @@ import kotlin.test.Test
     disabledReason = "OpenAI Token should be set as OPENAI_API_KEY to run the test suite",
 )
 class SuggestionsTest {
-    private val token = System.getenv("OPENAI_API_KEY")
+    private val token = System.getenv("GRAZIE_TOKEN")
 
     @Test
     fun test() = runTest {

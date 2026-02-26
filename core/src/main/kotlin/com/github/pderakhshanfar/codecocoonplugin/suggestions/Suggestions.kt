@@ -24,7 +24,7 @@ object SuggestionsApi {
      * @see suggestNewDirectoryImpl
      */
     suspend fun suggestNewDirectory(
-        token: String = System.getenv("OPENAI_API_KEY"),
+        token: String,
         model: LLModel = OpenAIModels.Chat.GPT4o,
         projectRoot: String,
         filepath: String,
