@@ -13,8 +13,13 @@ import com.intellij.openapi.project.Project
 import com.intellij.openapi.roots.ProjectFileIndex
 import com.intellij.openapi.vfs.VfsUtil
 import com.intellij.openapi.vfs.VirtualFile
+import com.intellij.psi.PsiDirectory
 import com.intellij.psi.PsiFile
 import com.intellij.psi.PsiJavaFile
+import com.intellij.psi.impl.PsiManagerImpl
+import com.intellij.psi.impl.file.PsiDirectoryImpl
+import com.intellij.refactoring.move.MoveCallback
+import com.intellij.refactoring.move.moveFilesOrDirectories.MoveFilesOrDirectoriesProcessor
 import kotlinx.coroutines.runBlocking
 import okio.Path.Companion.toPath
 import java.io.File
@@ -54,6 +59,25 @@ class MoveFileToAiSuggestedDirectoryTransformation(
         return context.language == Language.JAVA
     }
 
+    fun moveFiles(project: Project, fileToMove: PsiFile, where: PsiDirectory) {
+        val moveCallback = MoveCallback { println("refactoringCompleted") }
+
+        val prepareSuccessfulCallback = {
+            println("inside prepareSuccessfulCallback!")
+        }
+
+        val processor = MoveFilesOrDirectoriesProcessor(
+            /* project = */ project,
+            /* elements = */ arrayOf(fileToMove),
+            /* newParent = */ where,
+            /* searchInComments = */ true,
+            /* searchInNonJavaFiles = */ false,
+            /* moveCallback = */ moveCallback,
+            /* prepareSuccessfulCallback = */ prepareSuccessfulCallback,
+        )
+        processor.run()
+    }
+
     override fun apply(
         psiFile: PsiFile,
         virtualFile: VirtualFile
@@ -87,6 +111,18 @@ class MoveFileToAiSuggestedDirectoryTransformation(
             if (suggestedDirectories.isEmpty()) {
                 return TransformationResult.Failure("No directory suggestions received from AI")
             }
+
+            val suggestion = suggestedDirectories.firstOrNull()
+                ?: return TransformationResult.Failure("No directory suggestions received from AI")
+
+            val suggestedDirectory = VfsUtil.createDirectories(suggestion)
+            val where = PsiDirectoryImpl(PsiManagerImpl(project), suggestedDirectory)
+
+            moveFiles(project, psiFile, where)
+
+            return TransformationResult.Skipped("testing rn")
+
+
 
             // select suitable directory from AI suggestions
             val oldPackageName = psiFile.packageName
