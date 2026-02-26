@@ -1,12 +1,7 @@
 package com.github.pderakhshanfar.codecocoonplugin.appstarter
 
-import com.github.pderakhshanfar.codecocoonplugin.components.transformations.AddCommentTransformation
-import com.github.pderakhshanfar.codecocoonplugin.components.transformations.RenameClassTransformation
-import com.github.pderakhshanfar.codecocoonplugin.components.transformations.RenameMethodTransformation
-import com.github.pderakhshanfar.codecocoonplugin.components.transformations.RenameVariableTransformation
-import com.github.pderakhshanfar.codecocoonplugin.components.transformations.MoveFileToAiSuggestedDirectoryTransformation
-import com.github.pderakhshanfar.codecocoonplugin.components.transformations.MoveFileToNewDirectoryTransformation
-import com.github.pderakhshanfar.codecocoonplugin.components.transformations.TransformationRegistry
+import com.github.pderakhshanfar.codecocoonplugin.components.transformations.*
+import com.github.pderakhshanfar.codecocoonplugin.components.transformations.MoveFileIntoSuggestedDirectoryTransformation
 import com.github.pderakhshanfar.codecocoonplugin.config.CodeCocoonConfig
 import com.github.pderakhshanfar.codecocoonplugin.config.ConfigLoader
 import com.github.pderakhshanfar.codecocoonplugin.intellij.JvmProjectConfigurator
@@ -142,9 +137,14 @@ class HeadlessModeStarter : ApplicationStarter {
         TransformationRegistry.register(RenameMethodTransformation.ID) { config -> RenameMethodTransformation(config) }
         TransformationRegistry.register(RenameClassTransformation.ID) { config -> RenameClassTransformation(config) }
         TransformationRegistry.register(RenameVariableTransformation.ID) { config -> RenameVariableTransformation(config) }
-        TransformationRegistry.register(MoveFileToNewDirectoryTransformation.ID) { config -> MoveFileToNewDirectoryTransformation(config) }
-        TransformationRegistry.register(MoveFileToAiSuggestedDirectoryTransformation.ID) { config ->
-            MoveFileToAiSuggestedDirectoryTransformation(config)
+        // move file transformation:
+        // 1) with AI suggested directory
+        TransformationRegistry.register(MoveFileIntoSuggestedDirectoryTransformation.Companion.AI.ID) { config ->
+            MoveFileIntoSuggestedDirectoryTransformation.withAI(config, token = System.getenv("OPENAI_API_KEY"))
+        }
+        // 2) with a config-defined suggested directory
+        TransformationRegistry.register(MoveFileIntoSuggestedDirectoryTransformation.Companion.Config.ID) { config ->
+            MoveFileIntoSuggestedDirectoryTransformation.withConfig(config)
         }
     }
 

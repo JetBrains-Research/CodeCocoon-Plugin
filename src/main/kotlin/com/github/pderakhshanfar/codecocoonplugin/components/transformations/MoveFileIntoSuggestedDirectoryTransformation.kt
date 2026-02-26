@@ -5,6 +5,7 @@ import com.github.pderakhshanfar.codecocoonplugin.executor.TransformationResult
 import com.github.pderakhshanfar.codecocoonplugin.intellij.logging.withStdout
 import com.github.pderakhshanfar.codecocoonplugin.java.JavaTransformation
 import com.github.pderakhshanfar.codecocoonplugin.suggestions.SuggestionsApi
+import com.github.pderakhshanfar.codecocoonplugin.transformation.require
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.command.WriteCommandAction
 import com.intellij.openapi.diagnostic.thisLogger
@@ -20,28 +21,62 @@ import java.util.concurrent.CompletableFuture
 
 
 /**
- * A transformation that moves a given file to a directory suggested by AI.
+ * A transformation that moves a given file to a directory either 1) suggested by AI
+ * or 2) provided in the config.
+ * The target directory is determined dynamically based on the given strategy.
  *
- * This transformation analyzes the context of the provided file and relocates it to an AI-recommended
- * directory based on its content, usage, or other metadata. The target directory is determined dynamically based
- * on AI algorithms, making project organization more intuitive and efficient.
+ * **IMPORTANT: the transformation [id] is defined based on the given directory suggestion strategy:**
+ * 1. When AI used: [AI.ID]
+ * 2. When config used: [Config.ID]
  *
- * Expected config schema:
+ * The config schema depends on the selected [DirectorySuggestionApi].
+ *
+ * I. When [DirectorySuggestionApi.AI] is used, the schema is empty:
  * ```yaml
- * config:
- *   existingOnly: boolean (default: false) # optional, whether to suggestion yet non-existent directories
+ * config: # empty!
  * ```
  *
- * @property config Configuration parameters required for the transformation.
- * @constructor Initializes the transformation with the provided configuration map.
+ * II. When [DirectorySuggestionApi.Config] is used, the config schema is:
+ * ```yaml
+ * config:
+ *   destination: string # required, a directory where the file should be moved to (new or existing)
+ * ```
+ *
+ * @see withAI
+ * @see withConfig
  */
-class MoveFileToAiSuggestedDirectoryTransformation(
+class MoveFileIntoSuggestedDirectoryTransformation private constructor(
+    override val id: String,
     override val config: Map<String, Any>,
+    private val directorySuggestionApi: DirectorySuggestionApi,
 ) : JavaTransformation, SelfManagedTransformation() {
-    override val id = ID
     override val description = "Places the given Java file into a directory suggested by AI"
 
     private val logger = thisLogger().withStdout()
+
+    override fun apply(
+        psiFile: PsiFile,
+        virtualFile: VirtualFile,
+    ): TransformationResult {
+        // validate that this is a Java file
+        if (psiFile !is PsiJavaFile) {
+            return TransformationResult.Failure("File ${virtualFile.path} is not a Java file")
+        }
+
+        return try {
+            val project = psiFile.project
+            val suggestedDirectories = directorySuggestionApi.suggest(psiFile, virtualFile)
+
+            return tryToMoveFileIntoSuggestedDirectory(
+                project,
+                psiFile,
+                suggestedDirectories,
+            )
+        } catch (e: Exception) {
+            logger.error("Failed to move file ${virtualFile.name}", e)
+            TransformationResult.Failure("Failed to move file ${virtualFile.path}: ${e.message}", e)
+        }
+    }
 
     fun tryToMoveFileIntoSuggestedDirectory(
         project: Project,
@@ -115,50 +150,26 @@ class MoveFileToAiSuggestedDirectoryTransformation(
             "Failed to move $filename into any of ${suggestions.size} suggested directories:\n${suggestions.joinToString("\n") { "  - $it" }}")
     }
 
-    override fun apply(
-        psiFile: PsiFile,
-        virtualFile: VirtualFile
-    ): TransformationResult {
-        val project = psiFile.project
-        // validate that this is a Java file
-        if (psiFile !is PsiJavaFile) {
-            return TransformationResult.Failure("File ${virtualFile.path} is not a Java file")
-        }
-
-        return try {
-            val projectRoot = project.basePath
-                ?: return TransformationResult.Failure("Cannot determine project base path")
-
-            /**
-             * STEP 0: Generate AI Directory Suggestions and Create a Select New Package
-             */
-            logger.info("STEP 0: Generate AI Directory Suggestions and Create a Select New Package")
-            val suggestedDirectories = runBlocking {
-                SuggestionsApi.suggestNewDirectory(
-                    token = System.getenv("OPENAI_API_KEY"),
-                    projectRoot = projectRoot,
-                    filepath = virtualFile.path,
-                    // TODO: extract only declarations if the file is big
-                    content = {
-                        withReadAction { psiFile.text }
-                    },
-                    existingOnly = false,
-                )
-            }
-
-            return tryToMoveFileIntoSuggestedDirectory(
-                project,
-                psiFile,
-                suggestedDirectories,
-            )
-        } catch (e: Exception) {
-            logger.error("Failed to move file ${virtualFile.name}", e)
-            TransformationResult.Failure("Failed to move file ${virtualFile.path}: ${e.message}", e)
-        }
-    }
-
     companion object {
-        const val ID = "move-file-to-ai-suggested-directory-transformation"
+        object AI {
+            const val ID = "move-file-into-suggested-directory-transformation/ai"
+        }
+
+        object Config {
+            const val ID = "move-file-into-suggested-directory-transformation/config"
+        }
+
+        fun withAI(config: Map<String, Any>, token: String) = MoveFileIntoSuggestedDirectoryTransformation(
+            id = AI.ID,
+            config,
+            directorySuggestionApi = DirectorySuggestionApi.AI(token)
+        )
+
+        fun withConfig(config: Map<String, Any>) = MoveFileIntoSuggestedDirectoryTransformation(
+            id = Config.ID,
+            config,
+            directorySuggestionApi = DirectorySuggestionApi.Config(config),
+        )
     }
 }
 
@@ -185,4 +196,43 @@ private class MoveFilesOrDirectoriesProcessorWrapper(
 ) {
     val foundUsages: Map<PsiFile, List<UsageInfo>>
         get() = myFoundUsages
+}
+
+/**
+ * Strategy for selecting a destination directory.
+ */
+sealed class DirectorySuggestionApi {
+    /**
+     * Get the list of suggested directories.
+     */
+    abstract fun suggest(psiFile: PsiFile, virtualFile: VirtualFile): List<String>
+
+    // implementations
+    class AI(private val token: String) : DirectorySuggestionApi() {
+        override fun suggest(psiFile: PsiFile, virtualFile: VirtualFile): List<String> {
+            val projectRoot = psiFile.project.basePath ?: return emptyList()
+
+            val suggestedDirectories = runBlocking {
+                SuggestionsApi.suggestNewDirectory(
+                    token = token,
+                    projectRoot = projectRoot,
+                    filepath = virtualFile.path,
+                    // TODO: extract only declarations if the file is big
+                    content = {
+                        withReadAction { psiFile.text }
+                    },
+                    existingOnly = false,
+                )
+            }
+
+            return suggestedDirectories
+        }
+    }
+
+    class Config(private val config: Map<String, Any>) : DirectorySuggestionApi() {
+        override fun suggest(psiFile: PsiFile, virtualFile: VirtualFile): List<String> {
+            val dest = config.require<String>("destination")
+            return listOf(dest)
+        }
+    }
 }
