@@ -30,7 +30,7 @@ object SuggestionsApi {
         filepath: String,
         content: () -> String,
         existingOnly: Boolean = false
-    ): List<String> = suggestNewDirectoryImpl(
+    ): Result<List<String>> = suggestNewDirectoryImpl(
         token = token,
         model = model,
         projectRoot = projectRoot,

@@ -11,7 +11,6 @@ import kotlinx.coroutines.runBlocking
  * Interface for transformations that need access to IntelliJ Platform components (e.g., PSI, VFS, etc.).
  */
 interface IntelliJAwareTransformation : Transformation {
-    // TODO: make a file descriptor containing both psi and virtual files instead of two params?
     /**
      * Indicates whether this transformation manages its own write actions and commands.
      *

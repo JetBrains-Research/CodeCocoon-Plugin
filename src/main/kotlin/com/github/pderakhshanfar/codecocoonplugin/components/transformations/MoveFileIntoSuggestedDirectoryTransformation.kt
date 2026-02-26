@@ -1,5 +1,6 @@
 package com.github.pderakhshanfar.codecocoonplugin.components.transformations
 
+import com.github.pderakhshanfar.codecocoonplugin.common.TransformationStepFailed
 import com.github.pderakhshanfar.codecocoonplugin.components.transformations.IntelliJAwareTransformation.Companion.withReadAction
 import com.github.pderakhshanfar.codecocoonplugin.executor.TransformationResult
 import com.github.pderakhshanfar.codecocoonplugin.intellij.logging.withStdout
@@ -64,13 +65,20 @@ class MoveFileIntoSuggestedDirectoryTransformation private constructor(
         }
 
         return try {
-            val project = psiFile.project
-            val suggestedDirectories = directorySuggestionApi.suggest(psiFile, virtualFile)
+            val result = directorySuggestionApi.suggest(psiFile, virtualFile)
 
+            if (result.isFailure) {
+                return TransformationResult.Failure(
+                    "Failed to get directory suggestions",
+                    result.exceptionOrNull(),
+                )
+            }
+
+            val suggestedDirectories = result.getOrThrow()
             return tryToMoveFileIntoSuggestedDirectory(
-                project,
-                psiFile,
-                suggestedDirectories,
+                project = psiFile.project,
+                fileToMove = psiFile,
+                suggestions = suggestedDirectories,
             )
         } catch (e: Exception) {
             logger.error("Failed to move file ${virtualFile.name}", e)
@@ -205,14 +213,16 @@ sealed class DirectorySuggestionApi {
     /**
      * Get the list of suggested directories.
      */
-    abstract fun suggest(psiFile: PsiFile, virtualFile: VirtualFile): List<String>
+    abstract fun suggest(psiFile: PsiFile, virtualFile: VirtualFile): Result<List<String>>
 
     // implementations
     class AI(private val token: String) : DirectorySuggestionApi() {
-        override fun suggest(psiFile: PsiFile, virtualFile: VirtualFile): List<String> {
-            val projectRoot = psiFile.project.basePath ?: return emptyList()
+        override fun suggest(psiFile: PsiFile, virtualFile: VirtualFile): Result<List<String>> {
+            val projectRoot = psiFile.project.basePath ?: return Result.failure(
+                TransformationStepFailed("Project root not found.")
+            )
 
-            val suggestedDirectories = runBlocking {
+            return runBlocking {
                 SuggestionsApi.suggestNewDirectory(
                     token = token,
                     projectRoot = projectRoot,
@@ -224,15 +234,13 @@ sealed class DirectorySuggestionApi {
                     existingOnly = false,
                 )
             }
-
-            return suggestedDirectories
         }
     }
 
     class Config(private val config: Map<String, Any>) : DirectorySuggestionApi() {
-        override fun suggest(psiFile: PsiFile, virtualFile: VirtualFile): List<String> {
+        override fun suggest(psiFile: PsiFile, virtualFile: VirtualFile): Result<List<String>> {
             val dest = config.require<String>("destination")
-            return listOf(dest)
+            return Result.success(listOf(dest))
         }
     }
 }

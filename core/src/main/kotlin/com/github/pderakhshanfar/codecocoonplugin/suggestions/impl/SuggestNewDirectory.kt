@@ -13,13 +13,14 @@ import ai.koog.prompt.dsl.Prompt
 import ai.koog.prompt.executor.llms.all.simpleOpenAIExecutor
 import ai.koog.prompt.llm.LLModel
 import ai.koog.rag.base.files.JVMFileSystemProvider
+import com.github.pderakhshanfar.codecocoonplugin.common.ParsingException
+import com.intellij.openapi.diagnostic.thisLogger
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import java.io.File
-
 
 // TODO: use the `LLM` module somehow?
 internal suspend fun suggestNewDirectoryImpl(
@@ -28,8 +29,8 @@ internal suspend fun suggestNewDirectoryImpl(
     projectRoot: String,
     filepath: String,
     content: () -> String,
-    existingOnly: Boolean = false
-): List<String> {
+    existingOnly: Boolean = false,
+): Result<List<String>> {
     val executor = simpleOpenAIExecutor(token)
 
     val agent = AIAgent(
@@ -55,19 +56,12 @@ internal suspend fun suggestNewDirectoryImpl(
     ) {
         handleEvents {
             onToolCallStarting { ctx ->
-                println("→ Calling `${ctx.tool.name}` with: ${ctx.toolArgs}")
+                thisLogger().info("→ Calling `${ctx.tool.name}` with: ${ctx.toolArgs}")
             }
         }
     }
 
     val result = agent.run(agentInput = buildUserPrompt(filepath, content()))
-    println("""
-result:
-'''
-$result
-'''
-    """.trimIndent())
-
     return parseDirectorySuggestions(result)
 }
 
@@ -195,18 +189,20 @@ private fun buildUserPrompt(filepath: String, content: String): String = """
 """.trimIndent()
 
 // TODO: parse the requested JSON structure into data class, not list of strings
-private fun parseDirectorySuggestions(llmOutput: String): List<String> {
+private fun parseDirectorySuggestions(llmOutput: String): Result<List<String>> {
     // Extract JSON from LLM response and parse suggestions
-    val jsonPattern = Regex("""\{[\s\S]*"suggestions"[\s\S]*\}""")
-    val match = jsonPattern.find(llmOutput) ?: return emptyList()
+    val jsonPattern = Regex("""\{[\s\S]*"suggestions"[\s\S]*}""")
+    val match = jsonPattern.find(llmOutput) ?: return Result.failure(
+        ParsingException("No JSON output with suggestions found in the LLM output"))
 
     return try {
         val json = Json.parseToJsonElement(match.value).jsonObject
-        json["suggestions"]?.jsonArray?.mapNotNull { suggestion ->
+        val result = json["suggestions"]?.jsonArray?.mapNotNull { suggestion ->
             suggestion.jsonObject["path"]?.jsonPrimitive?.content
-        } ?: emptyList()
+        } ?: return Result.failure(ParsingException("No suggestions found in the JSON output"))
+
+        Result.success(result)
     } catch (err: Exception) {
-        println(err)
-        emptyList()
+        Result.failure(err)
     }
 }
