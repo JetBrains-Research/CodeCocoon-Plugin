@@ -167,6 +167,7 @@ class RenameMethodTransformation(
             }
 
             ApplicationManager.getApplication().invokeAndWait {
+                PsiDocumentManager.getInstance(project).commitAllDocuments()
                 renameProcessor.run()
             }
 
