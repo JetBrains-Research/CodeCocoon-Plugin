@@ -145,15 +145,15 @@ class TransformationService {
 
                     when (val result = executor.execute(transformation, context)) {
                         is TransformationResult.Success -> {
-                            logger.info("✓ ${result.message}")
+                            logger.info("  ✓ ${result.message}")
                             successCount++
                         }
                         is TransformationResult.Failure -> {
-                            logger.error("✗ ${result.error}", result.exception)
+                            logger.error("  ✗ ${result.error}", result.exception)
                             failureCount++
                         }
                         is TransformationResult.Skipped -> {
-                            logger.info("⊘ Skipped: ${result.reason}")
+                            logger.info("  ⊘ Skipped: ${result.reason}")
                             skippedCount++
                         }
                     }
