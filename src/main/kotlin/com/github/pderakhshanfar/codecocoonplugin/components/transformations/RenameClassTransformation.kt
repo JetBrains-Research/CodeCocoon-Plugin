@@ -8,6 +8,8 @@ import com.github.pderakhshanfar.codecocoonplugin.executor.TransformationResult
 import com.github.pderakhshanfar.codecocoonplugin.intellij.logging.withStdout
 import com.github.pderakhshanfar.codecocoonplugin.intellij.psi.document
 import com.github.pderakhshanfar.codecocoonplugin.java.JavaTransformation
+import com.github.pderakhshanfar.codecocoonplugin.memory.PsiSignatureGenerator
+import com.github.pderakhshanfar.codecocoonplugin.memory.RenameMemory
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.readAction
 import com.intellij.openapi.diagnostic.thisLogger
@@ -27,8 +29,8 @@ import kotlinx.serialization.Serializable
  * Skips: classes referenced from non-Java files, test class names and annotated classes.
  */
 class RenameClassTransformation(
-    override val config: Map<String, Any>
-) : JavaTransformation, SelfManagedTransformation() {
+    config: Map<String, Any>
+) : JavaTransformation, MemoryAwareTransformation(config) {
     override val id: String = ID
     override val description: String = "Renames a class and all of its usages/references"
     private val logger = thisLogger().withStdout()
@@ -37,6 +39,9 @@ class RenameClassTransformation(
         psiFile: PsiFile, virtualFile: VirtualFile
     ): TransformationResult {
         val result = try {
+            // Get or initialize memory
+            val memory = getOrCreateMemory(psiFile.project)
+
             val document = withReadAction { psiFile.document() }
             val modifiedFiles = mutableSetOf<PsiFile>()
             val value = if (document != null) {
@@ -49,18 +54,26 @@ class RenameClassTransformation(
                 logger.info("  ⏲ Generating rename suggestions for ${eligibleClasses.size} classes...")
 
                 val renameSuggestions = runBlocking {
-                    eligibleClasses.associateWith { psiClass -> getNewClassNames(psiClass) }
+                    eligibleClasses.associateWith { psiClass -> getNameSuggestions(psiClass, memory) }
                 }
 
                 val successfulRenames = eligibleClasses.mapNotNull { psiClass ->
                     val className = withReadAction { psiClass.name }
                     val suggestions = renameSuggestions[psiClass] ?: return@mapNotNull null
 
+                    // Generate signature before renaming
+                    val signature = withReadAction { PsiSignatureGenerator.generateSignature(psiClass) }
+                    if (signature == null) {
+                        logger.warn("  ⊘ Could not generate signature for class $className")
+                        return@mapNotNull null
+                    }
+
                     // Try each suggestion until one succeeds
                     for (suggestion in suggestions) {
                         val files = tryRenameClassAndUsages(psiFile.project, psiClass, suggestion)
                         if (files != null) {
                             modifiedFiles.addAll(files)
+                            storeRenameInMemory(signature, suggestion)
                             return@mapNotNull psiClass to suggestion
                         }
                     }
@@ -72,6 +85,12 @@ class RenameClassTransformation(
                 val renamedCount = successfulRenames.size
                 val totalCandidates = eligibleClasses.size
                 val skipped = totalCandidates - renamedCount
+
+                // Save memory after successful renames if in write mode
+                if (!useMemory && memory != null && renamedCount > 0) {
+                    memory.save()
+                }
+
                 TransformationResult.Success(
                     message = "Renamed ${renamedCount}/${totalCandidates} classes in ${virtualFile.name}${if (skipped > 0) " (skipped: $skipped)" else ""}",
                     filesModified = modifiedFiles.size
@@ -98,7 +117,32 @@ class RenameClassTransformation(
         val fieldNames: List<String>
     )
 
-    private suspend fun getNewClassNames(psiClass: PsiClass, count: Int = DEFAULT_SUGGESTED_NAMES_SIZE): List<String> {
+    /**
+     * Gets name suggestions for a class, either from memory or by generating new ones via LLM.
+     */
+    private suspend fun getNameSuggestions(psiClass: PsiClass, memory: RenameMemory?): List<String> {
+        if (useMemory) {
+            val signature = withReadAction { PsiSignatureGenerator.generateSignature(psiClass) }
+            if (signature == null) {
+                logger.warn("Could not generate signature for class ${withReadAction { psiClass.name }}")
+                return emptyList()
+            }
+
+            val cachedName = memory?.get(signature)
+            if (cachedName != null) {
+                logger.info("  ↳ Using cached name for class ${withReadAction { psiClass.name }}: $cachedName")
+                return listOf(cachedName)
+            } else {
+                logger.warn("  ⊘ Class ${withReadAction { psiClass.name }} (signature: $signature) not found in memory, skipping rename")
+                return emptyList()
+            }
+        } else {
+            // Use LLM to generate new suggestions
+            return generateNewClassNames(psiClass)
+        }
+    }
+
+    private suspend fun generateNewClassNames(psiClass: PsiClass, count: Int = DEFAULT_SUGGESTED_NAMES_SIZE): List<String> {
         val context = readAction {
             val type = when {
                 psiClass.isInterface -> "interface"
