@@ -105,10 +105,12 @@ abstract class MemoryAwareTransformation(
      */
     protected fun storeRenameInMemory(signature: String, newName: String) {
         if (cachedMemory != null) {
-            cachedMemory!!.put(signature, newName)
             if (!useMemory) {
+                cachedMemory!!.put(signature, newName)
                 logger.info("      ✓ Stored rename in memory: `$signature` -> `$newName`")
             }
+        } else {
+            logger.warn("      ✗ Memory is null. Could not store rename for: `\$signature` -> `\$newName`\"")
         }
     }
 }
