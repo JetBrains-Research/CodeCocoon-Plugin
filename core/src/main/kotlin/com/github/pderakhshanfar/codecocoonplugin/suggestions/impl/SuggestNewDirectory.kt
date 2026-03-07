@@ -131,7 +131,7 @@ private fun buildSystemPrompt(projectRoot: String, existingOnly: Boolean): Strin
            - java.lang.* shadows (String, Object, System)
         
         4. SUGGESTION GENERATION
-           Output exactly 3-5 directory suggestions in this JSON format:
+           Output exactly 3-5 directory suggestions in this JSON format (the most suitable results MUST come FIRST in the list):
         ```json
            {
              "suggestions": [
@@ -146,6 +146,9 @@ private fun buildSystemPrompt(projectRoot: String, existingOnly: Boolean): Strin
              "file_purpose": "SERVICE"
            }
         ```
+        - In the "confidence" field, specify how confident you are to select this suggestion as a new location.
+        - In the "reason" field, mention why you think this suggestion is suitable.
+        
         
         CRITICAL RULES:
         - [!] OUTPUT ABSOLUTE PATHS BASED ON THE PROJECT ROOT!
