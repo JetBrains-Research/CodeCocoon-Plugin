@@ -18,6 +18,7 @@ import com.intellij.refactoring.move.MoveCallback
 import com.intellij.refactoring.move.moveFilesOrDirectories.MoveFilesOrDirectoriesProcessor
 import com.intellij.usageView.UsageInfo
 import kotlinx.coroutines.runBlocking
+import java.nio.file.Paths
 import java.util.concurrent.CompletableFuture
 
 
@@ -101,9 +102,24 @@ class MoveFileIntoSuggestedDirectoryTransformation private constructor(
             return TransformationResult.Failure("Cannot move $filename: No directory suggestions received")
         }
 
+        val projectRoot = project.basePath
+            ?: return TransformationResult.Failure("Project root not found")
+
         logger.info("  ⏲ Attempting to move $filename into suggestions...")
-        for (suggestion in suggestions) {
-            logger.info("    ↳ Attempting $suggestion...")
+        for ((index, suggestionPath) in suggestions.withIndex()) {
+            logger.info("    ↳ Attempting suggestion #${index + 1}: '$suggestionPath'")
+
+            val isRelative = !Paths.get(suggestionPath).isAbsolute
+            val suggestion = if (isRelative) {
+                logger.info("    ↳ The suggested path is relative, prepending project root: '$projectRoot'")
+                val absolute = Paths.get(projectRoot, suggestionPath).toString()
+                logger.info("    ↳ Converted to absolute path: '$absolute'")
+                absolute
+            } else {
+                // the suggested path is already absolute, no need to prepend project root
+                suggestionPath
+            }
+
             val suggestedDirectory = WriteCommandAction.runWriteCommandAction<VirtualFile>(project) {
                 VfsUtil.createDirectories(suggestion)
             }
