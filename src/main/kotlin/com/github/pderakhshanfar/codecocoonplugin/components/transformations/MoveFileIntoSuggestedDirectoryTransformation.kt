@@ -168,7 +168,6 @@ class MoveFileIntoSuggestedDirectoryTransformation private constructor(
                     modifiedFiles to summary
                 }
 
-                logger.info("    ↳ Successfully moved $filename into $suggestion!")
                 return TransformationResult.Success(
                     message = "Successfully moved $filename into $suggestion. Usage Summary:\n$usageSummary",
                     filesModified,
