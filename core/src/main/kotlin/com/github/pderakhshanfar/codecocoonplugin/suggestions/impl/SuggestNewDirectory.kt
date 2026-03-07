@@ -40,7 +40,7 @@ internal suspend fun suggestNewDirectoryImpl(
                 system(buildSystemPrompt(projectRoot, existingOnly))
             },
             model = model,
-            maxAgentIterations = 15
+            maxAgentIterations = 50
         ),
         toolRegistry = ToolRegistry {
             tool(ListDirectoryTool(JVMFileSystemProvider.ReadOnly))
