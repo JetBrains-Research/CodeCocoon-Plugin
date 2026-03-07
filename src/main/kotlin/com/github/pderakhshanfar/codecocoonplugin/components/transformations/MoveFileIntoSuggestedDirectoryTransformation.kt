@@ -15,6 +15,7 @@ import com.intellij.openapi.project.Project
 import com.intellij.openapi.vfs.VfsUtil
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.psi.*
+import com.intellij.psi.search.searches.ReferencesSearch
 import com.intellij.refactoring.move.MoveCallback
 import com.intellij.refactoring.move.moveFilesOrDirectories.MoveFilesOrDirectoriesProcessor
 import com.intellij.usageView.UsageInfo
@@ -99,8 +100,15 @@ class MoveFileIntoSuggestedDirectoryTransformation private constructor(
     ): TransformationResult {
         val filename = withReadAction { fileToMove.name }
 
+        if (fileToMove !is PsiJavaFile) {
+            return TransformationResult.Failure("Cannot move $filename: Not a Java file")
+        }
         if (suggestions.isEmpty()) {
             return TransformationResult.Failure("Cannot move $filename: No directory suggestions received")
+        }
+
+        if (packageLocalClassesInUseByOtherFiles(fileToMove)) {
+            return TransformationResult.Skipped("Cannot move $filename: Package-local classes are in use by other files")
         }
 
         val projectRoot = project.basePath
@@ -129,7 +137,6 @@ class MoveFileIntoSuggestedDirectoryTransformation private constructor(
             } ?: continue
 
             val successfullyMoved = CompletableFuture<Boolean>()
-
             val processor = withReadAction {
                 MoveFilesOrDirectoriesProcessorWrapper(
                     project = project,
@@ -144,6 +151,7 @@ class MoveFileIntoSuggestedDirectoryTransformation private constructor(
                     prepareSuccessfulCallback = { /* no-op */ },
                 )
             }
+
             try {
                 ApplicationManager.getApplication().invokeAndWait {
                     PsiDocumentManager.getInstance(project).commitAllDocuments()
@@ -189,6 +197,60 @@ class MoveFileIntoSuggestedDirectoryTransformation private constructor(
             "Failed to move $filename into any of ${suggestions.size} suggested directories:\n${suggestions.joinToString("\n") { "  - $it" }}")
     }
 
+    /**
+     * Checks if any package-local classes in the given Java file are used by other files (i.e., **not the file they are defined at**).
+     *
+     * @param javaFile The Java file to analyze for package-local classes and their usage.
+     * @return `true` if any package-local class in the file is referenced by other files (i.e., not in [javaFile]), otherwise `false`.
+     */
+    private fun packageLocalClassesInUseByOtherFiles(javaFile: PsiJavaFile): Boolean = withReadAction {
+        // find all package-local classes in the file
+        val packageLocalClasses = buildList<PsiClass> {
+            for (clazz in javaFile.classes) {
+                // A class is package-local if it has no explicit access modifier
+                // (not public, protected, or private)
+                val isPackageLocal = !clazz.hasModifierProperty(PsiModifier.PUBLIC) &&
+                        !clazz.hasModifierProperty(PsiModifier.PROTECTED) &&
+                        !clazz.hasModifierProperty(PsiModifier.PRIVATE)
+
+                if (isPackageLocal) {
+                    add(clazz)
+                }
+            }
+        }
+        val classNames = packageLocalClasses.mapNotNull { it.name }
+        logger.info("    ↳ Found ${packageLocalClasses.size} package-local classes in ${javaFile.name}: ${classNames.joinToString()}")
+
+        // check if any package-local class is used by other files
+        val references = buildMap<PsiClass, List<PsiReference>> {
+            for (clazz in packageLocalClasses) {
+                val references = ReferencesSearch.search(clazz).findAll()
+                val refsFromOtherFiles = references.filter { ref ->
+                    // check if the reference is from a different file
+                    ref.element.containingFile != javaFile
+                }
+                put(clazz, refsFromOtherFiles)
+            }
+        }
+
+        val packageLocalClassesInUseByOtherFiles = references.any { (_, refs) -> refs.isNotEmpty() }
+        if (packageLocalClassesInUseByOtherFiles) {
+            // logging for transparency
+            logger.info("    ⚠ Some package-local classes are in use by other files:")
+            var index = 0
+            for ((clazz, refs) in references) {
+                if (refs.isNotEmpty()) {
+                    val fileNames = refs.mapNotNull { it.element.containingFile?.name }
+                    logger.info("       ${index+1}) `${clazz.name}` class referenced in ${refs.size} files: ${fileNames.joinToString()}")
+                    index += 1
+                }
+            }
+        } else {
+            logger.info("    ↳ No package-local classes are in use by other files: ${javaFile.name} can be moved")
+        }
+        packageLocalClassesInUseByOtherFiles
+    }
+
     companion object {
         object AI {
             const val ID = "move-file-into-suggested-directory-transformation/ai"
@@ -211,6 +273,7 @@ class MoveFileIntoSuggestedDirectoryTransformation private constructor(
         )
     }
 }
+
 
 /**
  * This wrapper delegates ALL methods to [MoveFilesOrDirectoriesProcessor].
