@@ -41,7 +41,7 @@ import java.util.concurrent.CompletableFuture
  * II. When [DirectorySuggestionApi.Config] is used, the config schema is:
  * ```yaml
  * config:
- *   destination: string # required, a directory where the file should be moved to (new or existing)
+ *   destination: string # required, a directory (absolute or relative to the project root) where the file should be moved to (new or existing)
  * ```
  *
  * @see withAI
