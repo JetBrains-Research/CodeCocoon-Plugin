@@ -10,6 +10,7 @@ import com.github.pderakhshanfar.codecocoonplugin.transformation.require
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.command.WriteCommandAction
 import com.intellij.openapi.diagnostic.thisLogger
+import com.intellij.openapi.progress.ProcessCanceledException
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.vfs.VfsUtil
 import com.intellij.openapi.vfs.VirtualFile
@@ -143,9 +144,16 @@ class MoveFileIntoSuggestedDirectoryTransformation private constructor(
                     prepareSuccessfulCallback = { /* no-op */ },
                 )
             }
-            ApplicationManager.getApplication().invokeAndWait {
-                PsiDocumentManager.getInstance(project).commitAllDocuments()
-                processor.run()
+            try {
+                ApplicationManager.getApplication().invokeAndWait {
+                    PsiDocumentManager.getInstance(project).commitAllDocuments()
+                    processor.run()
+                }
+            } catch (err: ProcessCanceledException) {
+                // NOTE: `ProcessCanceledException` cannot be silenced, see its Javadoc
+                throw err
+            } catch (err: Exception) {
+                logger.error("Failed to move '$filename' into suggestion #${index + 1}", err)
             }
 
             // finish when moved successfully into the current suggestion
