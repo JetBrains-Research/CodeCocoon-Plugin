@@ -6,9 +6,9 @@ import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable
 import kotlin.test.Test
 
 @EnabledIfEnvironmentVariable(
-    named = "OPENAI_API_KEY",
+    named = "GRAZIE_TOKEN",
     matches = ".*",
-    disabledReason = "OpenAI Token should be set as OPENAI_API_KEY to run the test suite",
+    disabledReason = "OpenAI Token should be set as `GRAZIE_TOKEN` to run the test suite",
 )
 class SuggestionsTest {
     private val token = System.getenv("GRAZIE_TOKEN")
