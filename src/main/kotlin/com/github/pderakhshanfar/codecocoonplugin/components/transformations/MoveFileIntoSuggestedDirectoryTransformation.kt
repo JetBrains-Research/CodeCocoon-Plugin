@@ -2,6 +2,8 @@ package com.github.pderakhshanfar.codecocoonplugin.components.transformations
 
 import com.github.pderakhshanfar.codecocoonplugin.common.TransformationStepFailed
 import com.github.pderakhshanfar.codecocoonplugin.components.transformations.IntelliJAwareTransformation.Companion.withReadAction
+import com.github.pderakhshanfar.codecocoonplugin.components.transformations.MoveFileIntoSuggestedDirectoryTransformation.Companion.withAI
+import com.github.pderakhshanfar.codecocoonplugin.components.transformations.MoveFileIntoSuggestedDirectoryTransformation.Companion.withConfig
 import com.github.pderakhshanfar.codecocoonplugin.executor.TransformationResult
 import com.github.pderakhshanfar.codecocoonplugin.intellij.logging.withStdout
 import com.github.pderakhshanfar.codecocoonplugin.java.JavaTransformation
@@ -172,11 +174,18 @@ class MoveFileIntoSuggestedDirectoryTransformation private constructor(
                     val modifiedFiles = usages.values.flatten().toSet().size
                     val summary = buildString {
                         for ((index, entry) in usages.entries.withIndex()) {
-                            val (which, where) = entry
+                            val (which, usageInfo) = entry
+                            // the same file can appear multiple times, thus we count the number of usages
+                            val where = usageInfo
+                                .mapNotNull { it.virtualFile?.name }
+                                .groupingBy { it }
+                                .eachCount()
+                                .toList()
 
                             appendLine("  ${index+1}) ${which.name} has ${where.size} usages:")
                             for ((usageIndex, usage) in where.withIndex()) {
-                                appendLine("    ${usageIndex+1}) ${usage.virtualFile?.name}")
+                                val (filename, count) = usage
+                                appendLine("    ${usageIndex + 1}) $filename: $count time${if (count > 1) "s" else ""}")
                             }
                         }
                     }
