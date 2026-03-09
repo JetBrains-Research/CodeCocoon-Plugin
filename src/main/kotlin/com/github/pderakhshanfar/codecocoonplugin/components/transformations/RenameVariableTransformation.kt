@@ -54,7 +54,7 @@ class RenameVariableTransformation(
                 logger.info("  ⏲ Generating rename suggestions for ${eligibleVariables.size} variables...")
 
                 val renameSuggestions = runBlocking {
-                    eligibleVariables.associateWith { psiVar -> getNameSuggestions(psiVar, memory) }
+                    getNameSuggestionsForAll(eligibleVariables, memory)
                 }
 
                 // Try renaming each variable with suggestions until one succeeds
@@ -109,33 +109,39 @@ class RenameVariableTransformation(
     }
 
     /**
-     * Gets name suggestions for a variable, either from memory or by generating new ones via LLM.
+     * Gets name suggestions for all variables, either from memory or by generating new ones via LLM.
      */
-    private suspend fun getNameSuggestions(psiVar: PsiVariable, memory: RenameMemory?): List<String> {
+    private suspend fun getNameSuggestionsForAll(
+        variables: List<PsiVariable>,
+        memory: RenameMemory?
+    ): Map<PsiVariable, List<String>> {
         if (useMemory) {
-            val signature = withReadAction { PsiSignatureGenerator.generateSignature(psiVar) }
-            if (signature == null) {
-                logger.warn("Could not generate signature for variable ${withReadAction { psiVar.name }}")
-                return emptyList()
-            }
+            return variables.associateWith { psiVar ->
+                val signature = withReadAction { PsiSignatureGenerator.generateSignature(psiVar) }
+                if (signature == null) {
+                    logger.warn("Could not generate signature for variable ${withReadAction { psiVar.name }}")
+                    return@associateWith emptyList()
+                }
 
-            val cachedName = memory?.get(signature)
-            if (cachedName != null) {
-                logger.info("  ↳ Using cached name for variable ${withReadAction { psiVar.name }}: $cachedName")
-                return listOf(cachedName)
-            } else {
-                logger.info("  ⊘ Variable ${withReadAction { psiVar.name }} (signature: $signature) not found in memory, skipping rename")
-                return emptyList()
+                val cachedName = memory?.get(signature)
+                if (cachedName != null) {
+                    logger.info("  ↳ Using cached name for variable ${withReadAction { psiVar.name }}: $cachedName")
+                    listOf(cachedName)
+                } else {
+                    logger.info("  ⊘ Variable ${withReadAction { psiVar.name }} (signature: $signature) not found in memory, skipping rename")
+                    emptyList()
+                }
             }
         } else {
-            // Use LLM to generate new suggestions
-            val varName = withReadAction { psiVar.name }
-            val renaming = generateNewVariableNames(listOf(psiVar))
-                .find { it.originalName == varName }
-
-            return renaming?.suggestions?.let {
-                buildSuggestionList(it, psiVar.project)
-            } ?: emptyList()
+            // Write mode: batch-generate all names in a single LLM call
+            val batchRenamings = generateNewVariableNames(variables)
+            return variables.associateWith { psiVar ->
+                val varName = withReadAction { psiVar.name }
+                val renaming = batchRenamings.find { it.originalName == varName }
+                renaming?.suggestions?.let {
+                    withReadAction { buildSuggestionList(it, psiVar.project) }
+                } ?: emptyList()
+            }
         }
     }
 
