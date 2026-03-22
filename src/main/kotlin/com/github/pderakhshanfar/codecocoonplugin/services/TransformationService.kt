@@ -87,7 +87,7 @@ class TransformationService {
                         if (!file.isDirectory) {
                             // Get path relative to the resolved project root
                             val relativePath = VfsUtilCore.getRelativePath(file, projectRoot)
-                            if (relativePath != null && relativePath.startsWith("src")) {
+                            if (relativePath != null && relativePath.contains("src/main/")) {
                                 if (includeSet.isEmpty()) {
                                     add(relativePath)
                                 } else if (relativePath in includeSet
