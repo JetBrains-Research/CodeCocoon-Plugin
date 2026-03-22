@@ -3,8 +3,6 @@ package com.github.pderakhshanfar.codecocoonplugin.memory
 import com.github.pderakhshanfar.codecocoonplugin.intellij.logging.withStdout
 import com.intellij.openapi.diagnostic.thisLogger
 import com.intellij.psi.*
-import com.intellij.psi.util.PsiFormatUtil
-import com.intellij.psi.util.PsiFormatUtilBase
 import com.intellij.psi.util.PsiTreeUtil
 
 /**
@@ -58,21 +56,18 @@ object PsiSignatureGenerator {
      * Generates signature for a PsiMethod.
      * Format: fully.qualified.ClassName#methodName(param.Type1,param.Type2)
      *
-     * Uses PsiFormatUtil to generate a signature that includes parameter types,
-     * which allows handling method overloads correctly.
+     * Uses fully qualified names for all types for consistency and simplicity.
      */
     private fun generateMethodSignature(psiMethod: PsiMethod): String? {
         val classFqn = psiMethod.containingClass?.qualifiedName ?: return null
+        val methodName = psiMethod.name
 
-        // Format method with parameter types
-        val methodSignature = PsiFormatUtil.formatMethod(
-            psiMethod,
-            PsiSubstitutor.EMPTY,
-            PsiFormatUtilBase.SHOW_NAME or PsiFormatUtilBase.SHOW_PARAMETERS,
-            PsiFormatUtilBase.SHOW_TYPE or PsiFormatUtilBase.SHOW_FQ_CLASS_NAMES
-        )
+        // Build parameter list using canonical (fully qualified) type names
+        val paramTypes = psiMethod.parameterList.parameters.joinToString(", ") { param ->
+            param.type.canonicalText
+        }
 
-        return "$classFqn#$methodSignature"
+        return "$classFqn#$methodName($paramTypes)"
     }
 
     /**
