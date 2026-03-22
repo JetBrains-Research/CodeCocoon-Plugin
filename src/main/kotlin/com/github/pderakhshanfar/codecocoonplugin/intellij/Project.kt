@@ -1,6 +1,7 @@
 package com.github.pderakhshanfar.codecocoonplugin.intellij
 
 import com.github.pderakhshanfar.codecocoonplugin.common.ProjectConfiguratorFailed
+import com.github.pderakhshanfar.codecocoonplugin.intellij.logging.withStdout
 import com.github.pderakhshanfar.codecocoonplugin.intellij.vfs.refreshAndFindVirtualFile
 import com.intellij.conversion.ConversionListener
 import com.intellij.conversion.ConversionService
@@ -13,7 +14,9 @@ import com.intellij.openapi.Disposable
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.ModalityState
 import com.intellij.openapi.application.ex.ApplicationManagerEx
+import com.intellij.openapi.diagnostic.thisLogger
 import com.intellij.openapi.progress.util.ProgressIndicatorBase
+import com.intellij.openapi.project.DumbService
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.Disposer
 import com.intellij.openapi.vfs.VirtualFile
@@ -21,7 +24,6 @@ import com.intellij.openapi.vfs.VirtualFileManager
 import org.jetbrains.idea.maven.MavenCommandLineInspectionProjectConfigurator
 import org.jetbrains.idea.maven.project.MavenProjectsManager
 import org.jetbrains.plugins.gradle.GradleCommandLineProjectConfigurator
-import org.slf4j.LoggerFactory
 import java.nio.file.Path
 import java.util.function.Predicate
 
@@ -46,7 +48,7 @@ class JvmProjectConfigurator {
 }
 
 private class JvmProjectResolver {
-    private val logger = LoggerFactory.getLogger(javaClass)
+    private val logger = thisLogger().withStdout()
 
     fun resolveProject(project: Project) {
         logger.info("Started to resolve project ${project.name}.")
@@ -70,7 +72,7 @@ private class JvmProjectResolver {
 }
 
 private object ProjectApplicationUtils {
-    private val logger = LoggerFactory.getLogger(javaClass)
+    private val logger = thisLogger().withStdout()
 
     /**
      * Rewritten from [com.intellij.codeInspection.InspectionApplicationBase].
@@ -145,6 +147,64 @@ private object ProjectApplicationUtils {
         configurator.preConfigureProject(project, context)
         configurator.configureProject(project, context)
         waitForInvokeLaterActivities()
+
+        // Manual Maven import trigger
+        if (configurator is MavenCommandLineInspectionProjectConfigurator) {
+            val mavenManager = MavenProjectsManager.getInstance(project)
+            logger.info("Triggering Maven import... (current modules: ${mavenManager.projects.size})")
+
+            ApplicationManager.getApplication().invokeAndWait {
+                mavenManager.forceUpdateAllProjectsOrFindAllAvailablePomFiles()
+            }
+
+            // Wait for Maven modules to appear - stable count for 3 seconds
+            var attempts = 0
+            var lastCount = 0
+            var stableCount = 0
+
+            while (attempts < 120) {
+                waitForInvokeLaterActivities()
+                val count = mavenManager.projects.size
+
+                if (count == lastCount && count > 0) {
+                    stableCount++
+                    if (stableCount >= 3) {
+                        logger.info("Maven import completed. Found ${count} modules")
+                        break
+                    }
+                } else {
+                    stableCount = 0
+                    lastCount = count
+                }
+
+                Thread.sleep(1000)
+                attempts++
+            }
+
+            if (mavenManager.projects.size == 0) {
+                logger.warn("Maven import may have failed - no modules found")
+            }
+
+            // Wait for indexing to complete
+            logger.info("Waiting for indexing to complete...")
+            val dumbService = DumbService.getInstance(project)
+            var indexAttempts = 0
+            while (dumbService.isDumb && indexAttempts < 120) {
+                Thread.sleep(1000)
+                indexAttempts++
+            }
+            if (dumbService.isDumb) {
+                logger.warn("Indexing did not complete in time")
+            } else {
+                logger.info("Indexing completed")
+            }
+
+            // Extra buffer for source roots to register
+            logger.info("Waiting for source roots to be registered...")
+            Thread.sleep(5000)
+            logger.info("Project resolution complete")
+        }
+
         logger.info("Project ${project.name} was successfully resolved with configurator ${configurator.name}!")
     }
 
@@ -173,7 +233,7 @@ private object ProjectApplicationUtils {
 }
 
 private class ConversionListenerImpl : ConversionListener {
-    private val logger = LoggerFactory.getLogger(javaClass)
+    private val logger = thisLogger().withStdout()
 
     override fun conversionNeeded() {
         logger.info("Conversion is needed for project.")
@@ -198,7 +258,7 @@ private class ConfiguratorContextImpl(
     private val filesFilter: Predicate<Path> = Predicate { true },
     private val virtualFilesFilter: Predicate<VirtualFile> = Predicate { true },
 ) : ConfiguratorContext {
-    private val logger = LoggerFactory.getLogger(javaClass)
+    private val logger = thisLogger().withStdout()
     override fun getProgressIndicator() = indicator
     override fun getLogger() = object : CommandLineInspectionProgressReporter {
         override fun reportError(message: String) {
