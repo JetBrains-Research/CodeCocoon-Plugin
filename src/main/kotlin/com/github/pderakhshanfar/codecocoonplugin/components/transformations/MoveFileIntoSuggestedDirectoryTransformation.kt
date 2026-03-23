@@ -14,6 +14,7 @@ import com.intellij.openapi.command.WriteCommandAction
 import com.intellij.openapi.diagnostic.thisLogger
 import com.intellij.openapi.progress.ProcessCanceledException
 import com.intellij.openapi.project.Project
+import com.intellij.openapi.roots.ProjectFileIndex
 import com.intellij.openapi.vfs.VfsUtil
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.psi.*
@@ -109,6 +110,17 @@ class MoveFileIntoSuggestedDirectoryTransformation private constructor(
             return TransformationResult.Failure("Cannot move $filename: No directory suggestions received")
         }
 
+        val fileIndex = ProjectFileIndex.getInstance(project)
+        val isInTestSourceContent = withReadAction {
+            fileIndex.isInTestSourceContent(fileToMove.virtualFile)
+        }
+        if (isInTestSourceContent) {
+            return TransformationResult.Skipped(
+                "Cannot move $filename: It is located under a test source directory and likely a test file")
+        }
+
+        // if any package-local class is in use by other classes within the same package,
+        // we cannot move the file into another directory. Otherwise, it breaks these other classes.
         if (packageLocalClassesInUseByOtherFiles(fileToMove)) {
             return TransformationResult.Skipped("Cannot move $filename: Package-local classes are in use by other files")
         }
