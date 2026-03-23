@@ -77,15 +77,15 @@ abstract class MemoryAwareTransformation(
             // Use the project's base path to derive a meaningful name
             val projectName = project.basePath?.let { File(it).name } ?: project.name
 
-            RenameMemory(projectName).also { memory ->
-                if (useMemory) {
-                    logger.info("  ↳ Memory-based renaming enabled (read mode). Memory file: ${memory.getMemoryFilePath()}")
-                    logger.info("    Loaded ${memory.size()} existing rename entries from memory")
-                } else {
-                    logger.info("  ↳ LLM-based renaming enabled (write mode). Memory file: ${memory.getMemoryFilePath()}")
-                    logger.info("    Loaded ${memory.size()} existing rename entries. New renames will be saved.")
-                }
+            val memory = RenameMemory(projectName)
+            if (useMemory) {
+                logger.info("  ↳ Memory-based renaming enabled (read mode). Memory file: ${memory.getMemoryFilePath()}")
+                logger.info("    Loaded ${memory.size()} existing rename entries from memory")
+            } else {
+                logger.info("  ↳ LLM-based renaming enabled (write mode). Memory file: ${memory.getMemoryFilePath()}")
+                logger.info("    Loaded ${memory.size()} existing rename entries. New renames will be saved.")
             }
+            memory
         } catch (e: Exception) {
             logger.error("Failed to initialize rename memory", e)
             null
