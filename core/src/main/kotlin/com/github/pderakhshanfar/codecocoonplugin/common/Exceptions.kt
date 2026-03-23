@@ -11,3 +11,13 @@ class ProjectConfiguratorFailed(
     message: String,
     cause: Throwable? = null
 ) : CodeCocoonException(message, cause)
+
+class TransformationStepFailed(
+    message: String,
+    cause: Throwable? = null
+) : CodeCocoonException(message, cause)
+
+class ParsingException(
+    message: String,
+    cause: Throwable? = null
+) : CodeCocoonException(message, cause)

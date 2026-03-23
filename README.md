@@ -44,6 +44,11 @@ transformations:
 - Rename Variable (id: `rename-variable-transformation`)
   - Renames Java variables to an LLM-suggested, semantically similar name and updates usages.
   - Skips: variables in test classes, enums, and those declared in library-files.
+- Move File Into Directory Suggested By AI (id: `move-file-into-suggested-directory-transformation/ai`)
+  - Moves a Java file into another directory suggested by an LLM based on the file content.
+- Move File Into Directory From Config (id: `move-file-into-suggested-directory-transformation/config`)
+  - Moves a Java file into a directory provided in the config under `destination` entry.
+  - The directory MUST be within the project BUT may be either new or existing.
 
 ## Template ToDo list
 - [x] Create a new [IntelliJ Platform Plugin Template][template] project.

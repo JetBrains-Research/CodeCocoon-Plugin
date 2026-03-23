@@ -1,10 +1,7 @@
 package com.github.pderakhshanfar.codecocoonplugin.appstarter
 
-import com.github.pderakhshanfar.codecocoonplugin.components.transformations.AddCommentTransformation
-import com.github.pderakhshanfar.codecocoonplugin.components.transformations.RenameClassTransformation
-import com.github.pderakhshanfar.codecocoonplugin.components.transformations.RenameMethodTransformation
-import com.github.pderakhshanfar.codecocoonplugin.components.transformations.RenameVariableTransformation
-import com.github.pderakhshanfar.codecocoonplugin.components.transformations.TransformationRegistry
+import com.github.pderakhshanfar.codecocoonplugin.components.transformations.*
+import com.github.pderakhshanfar.codecocoonplugin.components.transformations.MoveFileIntoSuggestedDirectoryTransformation
 import com.github.pderakhshanfar.codecocoonplugin.config.CodeCocoonConfig
 import com.github.pderakhshanfar.codecocoonplugin.config.ConfigLoader
 import com.github.pderakhshanfar.codecocoonplugin.intellij.JvmProjectConfigurator
@@ -124,7 +121,7 @@ class HeadlessModeStarter : ApplicationStarter {
     }
 
     /**
-     * Registers built-in transformations in the `TransformationRegistry`.
+     * Registers built-in transformations in the [TransformationRegistry].
      *
      * This function sets up predefined transformations that are available for use.
      * Each transformation is identified by a unique ID and is associated with a factory
@@ -140,6 +137,15 @@ class HeadlessModeStarter : ApplicationStarter {
         TransformationRegistry.register(RenameMethodTransformation.ID) { config -> RenameMethodTransformation(config) }
         TransformationRegistry.register(RenameClassTransformation.ID) { config -> RenameClassTransformation(config) }
         TransformationRegistry.register(RenameVariableTransformation.ID) { config -> RenameVariableTransformation(config) }
+        // move file transformation:
+        // 1) with AI suggested directory
+        TransformationRegistry.register(MoveFileIntoSuggestedDirectoryTransformation.Companion.AI.ID) { config ->
+            MoveFileIntoSuggestedDirectoryTransformation.withAI(config, token = System.getenv("GRAZIE_TOKEN"))
+        }
+        // 2) with a config-defined suggested directory
+        TransformationRegistry.register(MoveFileIntoSuggestedDirectoryTransformation.Companion.Config.ID) { config ->
+            MoveFileIntoSuggestedDirectoryTransformation.withConfig(config)
+        }
     }
 
     /**

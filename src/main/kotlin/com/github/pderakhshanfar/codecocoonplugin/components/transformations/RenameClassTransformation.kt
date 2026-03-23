@@ -169,7 +169,10 @@ class RenameClassTransformation(
                 )
             }
 
-            ApplicationManager.getApplication().invokeAndWait { renameProcessor.run() }
+            ApplicationManager.getApplication().invokeAndWait {
+                PsiDocumentManager.getInstance(project).commitAllDocuments()
+                renameProcessor.run()
+            }
 
             val modifiedFiles = withReadAction {
                 val files = mutableSetOf<PsiFile>()

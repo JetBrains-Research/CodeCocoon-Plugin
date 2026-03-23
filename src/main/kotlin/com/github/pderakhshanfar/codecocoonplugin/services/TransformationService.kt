@@ -111,9 +111,9 @@ class TransformationService {
      * Prints the list of files to the console.
      */
     private fun printFiles(files: List<String>) {
-        println("\n=== Project Files (${files.size} total) ===")
-        files.forEach { println(it) }
-        println("=== End of File List ===\n")
+        logger.info("\n=== Project Files (${files.size} total) ===")
+        files.forEach { logger.info(it) }
+        logger.info("=== End of File List ===\n")
     }
 
     private suspend fun applyTransformations(

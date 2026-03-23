@@ -27,6 +27,8 @@ class LLM(
             return LLM(model = convertModel(model), executor = createExecutor(token))
         }
 
+        suspend fun createGrazieExecutor(token: String) = createExecutor(token)
+
         private fun grazieIsAvailable(): Boolean {
             try {
                 getMainKtGrazieClass()
@@ -56,7 +58,6 @@ class LLM(
             }
             return executor
         }
-
     }
 
 
