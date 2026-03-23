@@ -194,10 +194,10 @@ class MoveFileIntoSuggestedDirectoryTransformation private constructor(
                                 .eachCount()
                                 .toList()
 
-                            appendLine("  ${index+1}) ${which.name} has ${where.size} usages:")
+                            appendLine("    ${index+1}. ${which.name} is used in ${where.size} place(s):")
                             for ((usageIndex, usage) in where.withIndex()) {
                                 val (filename, count) = usage
-                                appendLine("    ${usageIndex + 1}) $filename: $count time${if (count > 1) "s" else ""}")
+                                appendLine("      ${usageIndex + 1}. $filename: $count time${if (count > 1) "s" else ""}")
                             }
                         }
                     }
@@ -206,7 +206,7 @@ class MoveFileIntoSuggestedDirectoryTransformation private constructor(
                 }
 
                 return TransformationResult.Success(
-                    message = "Successfully moved $filename into $suggestion. Usage Summary:\n$usageSummary",
+                    message = "Successfully moved $filename into $suggestion.\n  Usage Summary:\n$usageSummary",
                     filesModified,
                 )
             }
