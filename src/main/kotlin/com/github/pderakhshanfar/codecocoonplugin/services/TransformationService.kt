@@ -6,6 +6,7 @@ import com.github.pderakhshanfar.codecocoonplugin.components.executor.IntelliJTr
 import com.github.pderakhshanfar.codecocoonplugin.config.CodeCocoonConfig
 import com.github.pderakhshanfar.codecocoonplugin.executor.TransformationResult
 import com.github.pderakhshanfar.codecocoonplugin.intellij.logging.withStdout
+import com.github.pderakhshanfar.codecocoonplugin.memory.PersistentMemory
 import com.github.pderakhshanfar.codecocoonplugin.transformation.Transformation
 import com.intellij.openapi.application.smartReadAction
 import com.intellij.openapi.components.Service
@@ -16,6 +17,7 @@ import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.openapi.vfs.VfsUtilCore
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.openapi.vfs.VirtualFileVisitor
+import java.io.File
 
 /**
  * Application-level service responsible for managing metamorphic transformations
@@ -126,41 +128,48 @@ class TransformationService {
         val files = listProjectFiles(project, config.projectRoot, includeOnly = config.files)
         val executor = IntelliJTransformationExecutor(project)
 
-        var successCount = 0
-        var failureCount = 0
-        var skippedCount = 0
+        // Create global memory instance for the entire project
+        // Memory is automatically saved via .use {} when block exits
+        val projectName = project.basePath?.let { File(it).name } ?: project.name
+        PersistentMemory(projectName, config.memoryDir).use { memory ->
+            logger.info("[TransformationService] Created global memory for project '$projectName'")
 
-        for (filePath in files) {
-            val context = createFileContext(filePath)
+            var successCount = 0
+            var failureCount = 0
+            var skippedCount = 0
 
-            if (!fileFilter(context)) {
-                skippedCount++
-                continue
-            }
+            for (filePath in files) {
+                val context = createFileContext(filePath)
 
-            for (transformation in transformations) {
-                if (transformation.accepts(context)) {
-                    logger.info("Applying ${transformation.id} to $filePath")
+                if (!fileFilter(context)) {
+                    skippedCount++
+                    continue
+                }
 
-                    when (val result = executor.execute(transformation, context)) {
-                        is TransformationResult.Success -> {
-                            logger.info("  ✓ ${result.message}")
-                            successCount++
-                        }
-                        is TransformationResult.Failure -> {
-                            logger.error("  ✗ ${result.error}", result.exception)
-                            failureCount++
-                        }
-                        is TransformationResult.Skipped -> {
-                            logger.info("  ⊘ Skipped: ${result.reason}")
-                            skippedCount++
+                for (transformation in transformations) {
+                    if (transformation.accepts(context)) {
+                        logger.info("Applying ${transformation.id} to $filePath")
+
+                        when (val result = executor.execute(transformation, context, memory)) {
+                            is TransformationResult.Success -> {
+                                logger.info("  ✓ ${result.message}")
+                                successCount++
+                            }
+                            is TransformationResult.Failure -> {
+                                logger.error("  ✗ ${result.error}", result.exception)
+                                failureCount++
+                            }
+                            is TransformationResult.Skipped -> {
+                                logger.info("  ⊘ Skipped: ${result.reason}")
+                                skippedCount++
+                            }
                         }
                     }
                 }
             }
-        }
 
-        logger.info("[TransformationService] Transformation summary: $successCount succeeded, $failureCount failed, $skippedCount skipped")
+            logger.info("[TransformationService] Transformation summary: $successCount succeeded, $failureCount failed, $skippedCount skipped")
+        }
     }
 
     private fun createFileContext(relativePath: String): FileContext {

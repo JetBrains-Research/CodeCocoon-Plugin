@@ -6,6 +6,7 @@ import com.github.pderakhshanfar.codecocoonplugin.executor.TransformationExecuto
 import com.github.pderakhshanfar.codecocoonplugin.executor.TransformationResult
 import com.github.pderakhshanfar.codecocoonplugin.intellij.psi.psiFile
 import com.github.pderakhshanfar.codecocoonplugin.intellij.vfs.findVirtualFile
+import com.github.pderakhshanfar.codecocoonplugin.memory.Memory
 import com.github.pderakhshanfar.codecocoonplugin.transformation.Transformation
 import com.intellij.openapi.application.ReadResult
 import com.intellij.openapi.application.readAction
@@ -26,11 +27,14 @@ class IntelliJTransformationExecutor(
 
     override suspend fun execute(
         transformation: Transformation,
-        context: FileContext
+        context: FileContext,
+        memory: Memory<String, String>?
     ): TransformationResult {
         return try {
             when (transformation) {
-                is IntelliJAwareTransformation -> executeIntelliJTransformation(transformation, context)
+                is IntelliJAwareTransformation -> {
+                    executeIntelliJTransformation(transformation, context, memory)
+                }
                 else -> TransformationResult.Failure("Transformation ${transformation.id} must implement `IntelliJAwareTransformation`")
             }
         } catch (err: Exception) {
@@ -42,6 +46,7 @@ class IntelliJTransformationExecutor(
     private suspend fun executeIntelliJTransformation(
         transformation: IntelliJAwareTransformation,
         context: FileContext,
+        memory: Memory<String, String>?
     ): TransformationResult {
         val virtualFile = project.findVirtualFile(context)
             ?: return TransformationResult.Failure(
@@ -55,7 +60,7 @@ class IntelliJTransformationExecutor(
             } ?: return TransformationResult.Failure("Cannot get PSI for file: ${context.relativePath}")
 
             // Run transformation directly - self-managed transformations handle EDT requirements internally
-            return transformation.apply(psiFile, virtualFile)
+            return transformation.apply(psiFile, virtualFile, memory)
         }
 
         // Regular transformations need writeCommandAction wrapper
@@ -66,7 +71,7 @@ class IntelliJTransformationExecutor(
                 )
 
             writeCommandAction(project, transformation.id) {
-                transformation.apply(psiFile, virtualFile)
+                transformation.apply(psiFile, virtualFile, memory)
             }
         }
     }

@@ -8,6 +8,7 @@ import com.github.pderakhshanfar.codecocoonplugin.executor.TransformationResult
 import com.github.pderakhshanfar.codecocoonplugin.intellij.logging.withStdout
 import com.github.pderakhshanfar.codecocoonplugin.intellij.psi.document
 import com.github.pderakhshanfar.codecocoonplugin.java.JavaTransformation
+import com.github.pderakhshanfar.codecocoonplugin.memory.Memory
 import com.github.pderakhshanfar.codecocoonplugin.memory.PsiSignatureGenerator
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.readAction
@@ -28,18 +29,16 @@ import kotlinx.serialization.Serializable
  * Skips: classes referenced from non-Java files, test class names and annotated classes.
  */
 class RenameClassTransformation(
-    config: Map<String, Any>
-) : JavaTransformation, MemoryAwareTransformation(config) {
+    override val config: Map<String, Any>
+) : JavaTransformation, SelfManagedTransformation() {
     override val id: String = ID
     override val description: String = "Renames a class and all of its usages/references"
     private val logger = thisLogger().withStdout()
 
     override fun apply(
-        psiFile: PsiFile, virtualFile: VirtualFile
+        psiFile: PsiFile, virtualFile: VirtualFile, memory: Memory<String, String>?
     ): TransformationResult {
         val result = try {
-            // Initialize memory
-            getOrCreateMemory(psiFile.project)
             val useMemory = config["useMemory"] as? Boolean ?: false
 
             val document = withReadAction { psiFile.document() }
@@ -54,7 +53,7 @@ class RenameClassTransformation(
                 logger.info("  ⏲ Generating rename suggestions for ${eligibleClasses.size} classes...")
 
                 val renameSuggestions = if (useMemory) {
-                    extractRenamesFromMemory(eligibleClasses)
+                    extractRenamesFromMemory(eligibleClasses, memory)
                 } else {
                     runBlocking { generateRenames(eligibleClasses) }
                 }
@@ -76,7 +75,8 @@ class RenameClassTransformation(
                         if (files != null) {
                             modifiedFiles.addAll(files)
                             if (!useMemory) {
-                                storeRenameInMemory(signature, suggestion)
+                                memory?.put(signature, suggestion)
+                                logger.info("      ✓ Stored rename in memory: `$signature` -> `$suggestion`")
                             }
                             return@mapNotNull psiClass to suggestion
                         }
@@ -89,11 +89,6 @@ class RenameClassTransformation(
                 val renamedCount = successfulRenames.size
                 val totalCandidates = eligibleClasses.size
                 val skipped = totalCandidates - renamedCount
-
-                // Save memory after successful renames if in write mode
-                if (!useMemory && cachedMemory != null && renamedCount > 0) {
-                    cachedMemory!!.save()
-                }
 
                 TransformationResult.Success(
                     message = "Renamed ${renamedCount}/${totalCandidates} classes in ${virtualFile.name}${if (skipped > 0) " (skipped: $skipped)" else ""}",
@@ -125,7 +120,8 @@ class RenameClassTransformation(
      * Extracts rename suggestions from memory for classes.
      */
     private fun extractRenamesFromMemory(
-        classes: List<PsiClass>
+        classes: List<PsiClass>,
+        memory: Memory<String, String>?
     ): Map<PsiClass, List<String>> {
         return classes.associateWith { psiClass ->
             val signature = withReadAction { PsiSignatureGenerator.generateSignature(psiClass) }
@@ -134,7 +130,7 @@ class RenameClassTransformation(
                 return@associateWith emptyList()
             }
 
-            val cachedName = cachedMemory?.get(signature)
+            val cachedName = memory?.get(signature)
             if (cachedName != null) {
                 logger.info("  ↳ Using cached rename: $signature -> $cachedName")
                 listOf(cachedName)

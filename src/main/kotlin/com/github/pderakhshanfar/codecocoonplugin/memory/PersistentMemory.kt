@@ -8,15 +8,26 @@ import kotlinx.serialization.json.Json
 import java.io.File
 
 /**
- * Manages persistent storage of rename operations to enable deterministic transformations.
+ * File-based persistent storage implementation of [Memory] interface.
  *
- * Memory files are stored in the provided memory directory and are organized by project name
- * to allow tracking multiple projects independently.
+ * Stores key-value pairs as JSON in a file within the specified directory.
+ * Files are organized by project name to allow tracking multiple projects independently.
+ *
+ * **Thread Safety:** This implementation is not thread-safe. Use external synchronization
+ * if accessing from multiple threads.
+ *
+ * **Usage:**
+ * ```kotlin
+ * PersistentMemory("myProject", "/path/to/memory").use { memory ->
+ *     memory.put("key", "value")
+ *     memory.get("key") // returns "value"
+ * } // automatically saves on close
+ * ```
  *
  * @param projectName The name of the project (used for the memory filename)
  * @param memoryDirPath The directory path where memory files should be stored
  */
-class RenameMemory(private val projectName: String, memoryDirPath: String) {
+class PersistentMemory(private val projectName: String, memoryDirPath: String) : Memory<String, String> {
 
     private val logger = thisLogger().withStdout()
 
@@ -37,47 +48,34 @@ class RenameMemory(private val projectName: String, memoryDirPath: String) {
         memoryData = loadFromDisk()
     }
 
-    /**
-     * Retrieves the stored name for a given element signature.
-     *
-     * @param signature The unique signature of the element
-     * @return The stored new name, or null if not found in memory
-     */
-    fun get(signature: String): String? {
-        if (signature.isBlank()) {
-            logger.warn("Attempted to get empty signature from memory")
+    override fun get(key: String): String? {
+        if (key.isBlank()) {
+            logger.warn("Attempted to get empty key from memory")
             return null
         }
-        return memoryData.entries[signature]
+        return memoryData.entries[key]
     }
 
-    /**
-     * Stores a successful rename operation in memory.
-     *
-     * @param signature The unique signature of the element
-     * @param newName The new name that was successfully applied
-     */
-    fun put(signature: String, newName: String) {
-        if (signature.isBlank()) {
-            logger.warn("Attempted to store empty signature in memory")
-            return
+    override fun put(key: String, value: String): String? {
+        if (key.isBlank()) {
+            logger.warn("Attempted to store empty key in memory")
+            return null
         }
-        if (newName.isBlank()) {
-            logger.warn("Attempted to store empty name for signature: $signature")
-            return
+        if (value.isBlank()) {
+            logger.warn("Attempted to store empty value for key: $key")
+            return null
         }
 
-        memoryData.entries[signature] = newName
+        return memoryData.entries.put(key, value)
     }
 
-    /**
-     * Persists the current memory state to disk.
-     */
-    fun save() {
+    override fun save() {
         val jsonString = json.encodeToString(memoryData)
         memoryFile.writeText(jsonString)
-        logger.info("  ↳ Successfully saved rename memory for project '$projectName' (${memoryData.entries.size} entries)")
+        logger.info("  ↳ Successfully saved memory for project '$projectName' (${memoryData.entries.size} entries)")
     }
+
+    override fun size(): Int = memoryData.entries.size
 
     /**
      * Loads memory data from disk, or creates a new empty memory if the file doesn't exist.
@@ -121,16 +119,6 @@ class RenameMemory(private val projectName: String, memoryDirPath: String) {
         return sanitized
     }
 
-    /**
-     * Returns the number of entries currently in memory.
-     */
-    fun size(): Int = memoryData.entries.size
-
-    /**
-     * Returns the path to the memory file.
-     */
-    fun getMemoryFilePath(): String = memoryFile.absolutePath
-
     companion object {
         private val json = Json {
             prettyPrint = true
@@ -143,10 +131,10 @@ class RenameMemory(private val projectName: String, memoryDirPath: String) {
  * Data class representing the persistent memory file structure.
  *
  * @property projectName The name of the project this memory belongs to
- * @property entries Map from element signature to new name
+ * @property entries Map from key to value
  */
 @Serializable
-private data class MemoryState (
+private data class MemoryState(
     val projectName: String,
     val entries: MutableMap<String, String>
 )

@@ -151,7 +151,7 @@ class HeadlessModeStarter : ApplicationStarter {
      * - Preserves the original order from the config.
      * - Enforces uniqueness: throws on duplicate ids.
      * - Throws on unknown ids and lists known ids to help configuration.
-     * - Injects memoryDir into each transformation's config for memory-aware transformations.
+     *
      */
     private fun mapToTransformations(config: CodeCocoonConfig): List<Transformation> {
         if (config.transformations.isEmpty()) {
@@ -167,12 +167,7 @@ class HeadlessModeStarter : ApplicationStarter {
                 throw IllegalArgumentException("Duplicate transformation id='$id' in codecocoon.yml. Ids must be unique.")
             }
 
-            // Inject memoryDir into transformation config
-            val configWithMemory = t.config.toMutableMap().apply {
-                put("memoryDir", config.memoryDir)
-            }
-
-            val instance = TransformationRegistry.create(id, configWithMemory) ?: run {
+            val instance = TransformationRegistry.create(id, t.config) ?: run {
                 val known = TransformationRegistry.knownIds().sorted().joinToString(", ")
                 throw IllegalArgumentException("Unknown transformation id='$id'. Known ids: [$known]")
             }

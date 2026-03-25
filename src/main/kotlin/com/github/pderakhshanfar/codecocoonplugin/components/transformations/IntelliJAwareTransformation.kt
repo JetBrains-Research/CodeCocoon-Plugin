@@ -1,6 +1,7 @@
 package com.github.pderakhshanfar.codecocoonplugin.components.transformations
 
 import com.github.pderakhshanfar.codecocoonplugin.executor.TransformationResult
+import com.github.pderakhshanfar.codecocoonplugin.memory.Memory
 import com.github.pderakhshanfar.codecocoonplugin.transformation.Transformation
 import com.intellij.openapi.application.readAction
 import com.intellij.openapi.vfs.VirtualFile
@@ -23,11 +24,13 @@ interface IntelliJAwareTransformation : Transformation {
      *
      * @param psiFile The PSI representation of the file
      * @param virtualFile The virtual file being transformed
+     * @param memory Optional persistent memory for storing transformation state
      * @return Result of the transformation
      */
     fun apply(
         psiFile: PsiFile,
-        virtualFile: VirtualFile
+        virtualFile: VirtualFile,
+        memory: Memory<String, String>? = null
     ): TransformationResult
 
     companion object {

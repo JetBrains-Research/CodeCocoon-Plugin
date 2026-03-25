@@ -8,6 +8,7 @@ import com.github.pderakhshanfar.codecocoonplugin.executor.TransformationResult
 import com.github.pderakhshanfar.codecocoonplugin.intellij.logging.withStdout
 import com.github.pderakhshanfar.codecocoonplugin.intellij.psi.document
 import com.github.pderakhshanfar.codecocoonplugin.java.JavaTransformation
+import com.github.pderakhshanfar.codecocoonplugin.memory.Memory
 import com.github.pderakhshanfar.codecocoonplugin.memory.PsiSignatureGenerator
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.readAction
@@ -28,18 +29,16 @@ import kotlinx.serialization.Serializable
  * Skips: variables in test classes, enums, and those declared in library-files.
  */
 class RenameVariableTransformation(
-    config: Map<String, Any>
-) : JavaTransformation, MemoryAwareTransformation(config) {
+    override val config: Map<String, Any>
+) : JavaTransformation, SelfManagedTransformation() {
     override val id: String = ID
     override val description: String = "Renames variables (fields, locals, parameters) and their usages"
     private val logger = thisLogger().withStdout()
 
     override fun apply(
-        psiFile: PsiFile, virtualFile: VirtualFile
+        psiFile: PsiFile, virtualFile: VirtualFile, memory: Memory<String, String>?
     ): TransformationResult {
         val result = try {
-            // Initialize memory
-            getOrCreateMemory(psiFile.project)
             val useMemory = config["useMemory"] as? Boolean ?: false
 
             val document = withReadAction { psiFile.document() }
@@ -54,7 +53,7 @@ class RenameVariableTransformation(
                 logger.info("  ⏲ Generating rename suggestions for ${eligibleVariables.size} variables...")
 
                 val renameSuggestions = if (useMemory) {
-                    extractRenamesFromMemory(eligibleVariables)
+                    extractRenamesFromMemory(eligibleVariables, memory)
                 } else {
                     runBlocking { generateRenames(eligibleVariables) }
                 }
@@ -77,7 +76,8 @@ class RenameVariableTransformation(
                         if (files != null) {
                             modifiedFiles.addAll(files)
                             if (!useMemory) {
-                                storeRenameInMemory(signature, suggestion)
+                                memory?.put(signature, suggestion)
+                                logger.info("      ✓ Stored rename in memory: `$signature` -> `$suggestion`")
                             }
                             return@mapNotNull psiVar to suggestion
                         }
@@ -90,11 +90,6 @@ class RenameVariableTransformation(
                 val renamedCount = successfulRenames.size
                 val totalCandidates = eligibleVariables.size
                 val skipped = totalCandidates - renamedCount
-
-                // Save memory after successful renames and if in write mode
-                if (!useMemory && cachedMemory != null && renamedCount > 0) {
-                    cachedMemory!!.save()
-                }
 
                 TransformationResult.Success(
                     message = "Renamed ${renamedCount}/${totalCandidates} variables in ${virtualFile.name}${if (skipped > 0) " (skipped: $skipped)" else ""}",
@@ -116,7 +111,8 @@ class RenameVariableTransformation(
      * Extracts rename suggestions from memory for variables.
      */
     private fun extractRenamesFromMemory(
-        variables: List<PsiVariable>
+        variables: List<PsiVariable>,
+        memory: Memory<String, String>?
     ): Map<PsiVariable, List<String>> {
         return variables.associateWith { psiVar ->
             val signature = withReadAction { PsiSignatureGenerator.generateSignature(psiVar) }
@@ -125,7 +121,7 @@ class RenameVariableTransformation(
                 return@associateWith emptyList()
             }
 
-            val cachedName = cachedMemory?.get(signature)
+            val cachedName = memory?.get(signature)
             if (cachedName != null) {
                 logger.info("  ↳ Using cached rename: $signature -> $cachedName")
                 listOf(cachedName)
