@@ -269,7 +269,7 @@ class RenameVariableTransformation(
         project: Project, psiVariable: PsiVariable, newName: String
     ): MutableSet<PsiFile>? {
         return try {
-            val oldName = psiVariable.name ?: return null
+            val oldName = withReadAction { psiVariable.name } ?: return null
             // isSearchInComments needs to be false. If true, it would breaks functionality by changing string literals.
             // example would be mappings of `PathVariable` from Spring.
             // `@param [paramName]` definitions in the Javadocs are still being renamed.

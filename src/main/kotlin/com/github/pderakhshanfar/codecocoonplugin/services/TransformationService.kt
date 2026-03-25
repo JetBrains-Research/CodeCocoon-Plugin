@@ -44,7 +44,6 @@ class TransformationService {
     ) {
         logger.info("[TransformationService] Starting transformation pipeline for project: ${project.name}")
 
-        // TODO: remove in the future
         // Step 1: List project files according to config
         val files = listProjectFiles(project, config.projectRoot, includeOnly = config.files)
         // Step 2: Print files to the console

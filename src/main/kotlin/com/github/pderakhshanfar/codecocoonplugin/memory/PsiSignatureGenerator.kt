@@ -36,7 +36,7 @@ object PsiSignatureGenerator {
 
     /**
      * Generates signature for a PsiClass.
-     * Format: fully.qualified.ClassName
+     * Format: package.ClassName
      */
     private fun generateClassSignature(psiClass: PsiClass): String? {
         return psiClass.qualifiedName
