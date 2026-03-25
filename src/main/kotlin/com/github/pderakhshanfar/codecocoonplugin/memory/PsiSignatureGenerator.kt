@@ -21,11 +21,11 @@ object PsiSignatureGenerator {
     fun generateSignature(psiElement: PsiElement): String? {
         return try {
             when (psiElement) {
-                is PsiClass -> generateClassSignature(psiElement)
-                is PsiField -> generateFieldSignature(psiElement)
-                is PsiMethod -> generateMethodSignature(psiElement)
-                is PsiParameter -> generateParameterSignature(psiElement)
-                is PsiLocalVariable -> generateLocalVariableSignature(psiElement)
+                is PsiClass -> psiElement.generateSignature()
+                is PsiField -> psiElement.generateSignature()
+                is PsiMethod -> psiElement.generateSignature()
+                is PsiParameter -> psiElement.generateSignature()
+                is PsiLocalVariable -> psiElement.generateSignature()
                 else -> null
             }
         } catch (e: Exception) {
@@ -33,62 +33,62 @@ object PsiSignatureGenerator {
             null
         }
     }
+}
 
-    /**
-     * Generates signature for a PsiClass.
-     * Format: package.ClassName
-     */
-    private fun generateClassSignature(psiClass: PsiClass): String? {
-        return psiClass.qualifiedName
+/**
+ * Generates signature for a PsiClass.
+ * Format: package.ClassName
+ */
+private fun PsiClass.generateSignature(): String? {
+    return qualifiedName
+}
+
+/**
+ * Generates signature for a PsiField.
+ * Format: fully.qualified.ClassName#fieldName
+ */
+private fun PsiField.generateSignature(): String? {
+    val classFqn = containingClass?.qualifiedName ?: return null
+    val fieldName = name
+    return "$classFqn#$fieldName"
+}
+
+/**
+ * Generates signature for a PsiMethod.
+ * Format: fully.qualified.ClassName#methodName(param.Type1,param.Type2)
+ *
+ * Uses fully qualified names for all types for consistency and simplicity.
+ */
+private fun PsiMethod.generateSignature(): String? {
+    val classFqn = containingClass?.qualifiedName ?: return null
+    val methodName = name
+
+    // Build parameter list using canonical (fully qualified) type names
+    val paramTypes = parameterList.parameters.joinToString(", ") { param ->
+        param.type.canonicalText
     }
 
-    /**
-     * Generates signature for a PsiField.
-     * Format: fully.qualified.ClassName#fieldName
-     */
-    private fun generateFieldSignature(psiField: PsiField): String? {
-        val classFqn = psiField.containingClass?.qualifiedName ?: return null
-        val fieldName = psiField.name
-        return "$classFqn#$fieldName"
-    }
+    return "$classFqn#$methodName($paramTypes)"
+}
 
-    /**
-     * Generates signature for a PsiMethod.
-     * Format: fully.qualified.ClassName#methodName(param.Type1,param.Type2)
-     *
-     * Uses fully qualified names for all types for consistency and simplicity.
-     */
-    private fun generateMethodSignature(psiMethod: PsiMethod): String? {
-        val classFqn = psiMethod.containingClass?.qualifiedName ?: return null
-        val methodName = psiMethod.name
+/**
+ * Generates signature for a PsiParameter.
+ * Format: fully.qualified.ClassName#methodName(param.Type1,param.Type2)#param:parameterName
+ */
+private fun PsiParameter.generateSignature(): String? {
+    val containingMethod = PsiTreeUtil.getParentOfType(this, PsiMethod::class.java) ?: return null
+    val methodSignature = containingMethod.generateSignature() ?: return null
+    val paramName = name
+    return "$methodSignature#param:$paramName"
+}
 
-        // Build parameter list using canonical (fully qualified) type names
-        val paramTypes = psiMethod.parameterList.parameters.joinToString(", ") { param ->
-            param.type.canonicalText
-        }
-
-        return "$classFqn#$methodName($paramTypes)"
-    }
-
-    /**
-     * Generates signature for a PsiParameter.
-     * Format: fully.qualified.ClassName#methodName(param.Type1,param.Type2)#param:parameterName
-     */
-    private fun generateParameterSignature(psiParameter: PsiParameter): String? {
-        val containingMethod = PsiTreeUtil.getParentOfType(psiParameter, PsiMethod::class.java) ?: return null
-        val methodSignature = generateMethodSignature(containingMethod) ?: return null
-        val paramName = psiParameter.name
-        return "$methodSignature#param:$paramName"
-    }
-
-    /**
-     * Generates signature for a PsiLocalVariable.
-     * Format: fully.qualified.ClassName#methodName(param.Type1,param.Type2)#localVar:variableName
-     */
-    private fun generateLocalVariableSignature(psiLocalVariable: PsiLocalVariable): String? {
-        val containingMethod = PsiTreeUtil.getParentOfType(psiLocalVariable, PsiMethod::class.java) ?: return null
-        val methodSignature = generateMethodSignature(containingMethod) ?: return null
-        val varName = psiLocalVariable.name
-        return "$methodSignature#localVar:$varName"
-    }
+/**
+ * Generates signature for a PsiLocalVariable.
+ * Format: fully.qualified.ClassName#methodName(param.Type1,param.Type2)#localVar:variableName
+ */
+private fun PsiLocalVariable.generateSignature(): String? {
+    val containingMethod = PsiTreeUtil.getParentOfType(this, PsiMethod::class.java) ?: return null
+    val methodSignature = containingMethod.generateSignature() ?: return null
+    val varName = name
+    return "$methodSignature#localVar:$varName"
 }
