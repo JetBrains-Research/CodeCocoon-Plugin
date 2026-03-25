@@ -125,9 +125,7 @@ class HeadlessModeStarter : ApplicationStarter {
      *
      * This function sets up predefined transformations that are available for use.
      * Each transformation is identified by a unique ID and is associated with a factory
-     * function that creates an instance of the transformation when invoked. Specifically,
-     * this implementation registers the "add-comment-transformation," which adds comments
-     * to the beginning of files.
+     * function that creates an instance of the transformation when invoked.
      *
      * The registration process ensures that the transformation is correctly mapped by its
      * unique ID in the registry, allowing it to be referenced dynamically during execution.
@@ -153,6 +151,7 @@ class HeadlessModeStarter : ApplicationStarter {
      * - Preserves the original order from the config.
      * - Enforces uniqueness: throws on duplicate ids.
      * - Throws on unknown ids and lists known ids to help configuration.
+     * - Injects memoryDir into each transformation's config for memory-aware transformations.
      */
     private fun mapToTransformations(config: CodeCocoonConfig): List<Transformation> {
         if (config.transformations.isEmpty()) {
@@ -168,7 +167,12 @@ class HeadlessModeStarter : ApplicationStarter {
                 throw IllegalArgumentException("Duplicate transformation id='$id' in codecocoon.yml. Ids must be unique.")
             }
 
-            val instance = TransformationRegistry.create(id, t.config) ?: run {
+            // Inject memoryDir into transformation config
+            val configWithMemory = t.config.toMutableMap().apply {
+                put("memoryDir", config.memoryDir)
+            }
+
+            val instance = TransformationRegistry.create(id, configWithMemory) ?: run {
                 val known = TransformationRegistry.knownIds().sorted().joinToString(", ")
                 throw IllegalArgumentException("Unknown transformation id='$id'. Known ids: [$known]")
             }

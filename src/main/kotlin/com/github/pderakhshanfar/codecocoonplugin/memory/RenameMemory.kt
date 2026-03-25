@@ -10,26 +10,30 @@ import java.io.File
 /**
  * Manages persistent storage of rename operations to enable deterministic transformations.
  *
- * Memory files are stored in the CodeCocoon-Plugin directory under `.codecocoon-memory/`
- * and are organized by project name to allow tracking multiple projects independently.
+ * Memory files are stored in the provided memory directory and are organized by project name
+ * to allow tracking multiple projects independently.
+ *
+ * @param projectName The name of the project (used for the memory filename)
+ * @param memoryDirPath The directory path where memory files should be stored
  */
-class RenameMemory(private val projectName: String) {
+class RenameMemory(private val projectName: String, memoryDirPath: String) {
 
     private val logger = thisLogger().withStdout()
 
     private val memoryFile: File
-    private var memoryData: RenameMemoryFile
+    private var memoryData: MemoryState
 
     init {
         // Sanitize project name for use in filename
         val sanitizedName = sanitizeProjectName(projectName)
 
-        // Ensure memory directory exists
-        if (!memoryBaseDir.exists()) {
-            memoryBaseDir.mkdirs()
+        // Convert path to File and ensure memory directory exists
+        val memoryDir = File(memoryDirPath)
+        if (!memoryDir.exists()) {
+            memoryDir.mkdirs()
         }
 
-        memoryFile = File(memoryBaseDir, "$sanitizedName.json")
+        memoryFile = File(memoryDir, "$sanitizedName.json")
         memoryData = loadFromDisk()
     }
 
@@ -79,14 +83,14 @@ class RenameMemory(private val projectName: String) {
      * Loads memory data from disk, or creates a new empty memory if the file doesn't exist.
      * Throws on JSON parse errors or project name mismatches.
      */
-    private fun loadFromDisk(): RenameMemoryFile {
+    private fun loadFromDisk(): MemoryState {
         if (!memoryFile.exists()) {
             logger.info("  • No existing memory file found for project '$projectName', creating new memory")
-            return RenameMemoryFile(projectName, mutableMapOf())
+            return MemoryState(projectName, mutableMapOf())
         }
 
         val jsonString = memoryFile.readText()
-        val loaded = json.decodeFromString<RenameMemoryFile>(jsonString)
+        val loaded = json.decodeFromString<MemoryState>(jsonString)
 
         // Verify project name matches
         if (loaded.projectName != projectName) {
@@ -128,24 +132,6 @@ class RenameMemory(private val projectName: String) {
     fun getMemoryFilePath(): String = memoryFile.absolutePath
 
     companion object {
-        private const val MEMORY_DIR = ".codecocoon-memory"
-
-        /**
-         * The directory where memory files are stored.
-         * Defaults to the CodeCocoon-Plugin root directory.
-         */
-        private val memoryBaseDir: File by lazy {
-            // Get the codecocoon.config system property path and resolve the memory directory relative to it
-            val configPath = System.getProperty("codecocoon.config")
-            val baseDir = if (configPath != null) {
-                File(configPath).parentFile
-            } else {
-                // Fallback to current working directory if property not set
-                File(System.getProperty("user.dir"))
-            }
-            File(baseDir, MEMORY_DIR)
-        }
-
         private val json = Json {
             prettyPrint = true
             ignoreUnknownKeys = true
@@ -160,7 +146,7 @@ class RenameMemory(private val projectName: String) {
  * @property entries Map from element signature to new name
  */
 @Serializable
-data class RenameMemoryFile(
+private data class MemoryState (
     val projectName: String,
     val entries: MutableMap<String, String>
 )

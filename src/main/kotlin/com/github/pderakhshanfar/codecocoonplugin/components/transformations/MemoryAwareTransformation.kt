@@ -36,6 +36,8 @@ import java.io.File
  * - Extract `useMemory` config locally to determine mode
  * - Implement their own memory extraction logic for read mode
  * - Generate new names via LLM for write mode
+ *
+ * @param config Transformation configuration from YAML (must include 'memoryDir' key)
  */
 abstract class MemoryAwareTransformation(
     override val config: Map<String, Any>
@@ -71,7 +73,11 @@ abstract class MemoryAwareTransformation(
             // Use the project's base path to derive a meaningful name
             val projectName = project.basePath?.let { File(it).name } ?: project.name
 
-            val memory = RenameMemory(projectName)
+            // Extract memoryDir from config (injected by HeadlessModeStarter)
+            val memoryDirPath = config["memoryDir"] as? String
+                ?: throw IllegalStateException("memoryDir not found in config")
+
+            val memory = RenameMemory(projectName, memoryDirPath)
             logger.info("  ↳ Rename memory initialized. Memory file: ${memory.getMemoryFilePath()}")
             logger.info("    Loaded ${memory.size()} existing rename entries from memory")
             memory
