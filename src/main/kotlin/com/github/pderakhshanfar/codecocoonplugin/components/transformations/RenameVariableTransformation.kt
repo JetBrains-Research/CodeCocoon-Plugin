@@ -39,8 +39,9 @@ class RenameVariableTransformation(
         psiFile: PsiFile, virtualFile: VirtualFile
     ): TransformationResult {
         val result = try {
-            // Get or initialize memory
-            val memory = getOrCreateMemory(psiFile.project)
+            // Initialize memory
+            getOrCreateMemory(psiFile.project)
+            val useMemory = config["useMemory"] as? Boolean ?: false
 
             val document = withReadAction { psiFile.document() }
             val modifiedFiles = mutableSetOf<PsiFile>()
@@ -53,8 +54,10 @@ class RenameVariableTransformation(
 
                 logger.info("  ⏲ Generating rename suggestions for ${eligibleVariables.size} variables...")
 
-                val renameSuggestions = runBlocking {
-                    getNameSuggestionsForAll(eligibleVariables, memory)
+                val renameSuggestions = if (useMemory) {
+                    extractRenamesFromMemory(eligibleVariables)
+                } else {
+                    runBlocking { generateRenames(eligibleVariables) }
                 }
 
                 // Try renaming each variable with suggestions until one succeeds
@@ -74,7 +77,9 @@ class RenameVariableTransformation(
                         val files = tryRenameVariableAndUsages(psiFile.project, psiVar, suggestion)
                         if (files != null) {
                             modifiedFiles.addAll(files)
-                            storeRenameInMemory(signature, suggestion)
+                            if (!useMemory) {
+                                storeRenameInMemory(signature, suggestion)
+                            }
                             return@mapNotNull psiVar to suggestion
                         }
                     }
@@ -88,8 +93,8 @@ class RenameVariableTransformation(
                 val skipped = totalCandidates - renamedCount
 
                 // Save memory after successful renames and if in write mode
-                if (!useMemory && memory != null && renamedCount > 0) {
-                    memory.save()
+                if (!useMemory && cachedMemory != null && renamedCount > 0) {
+                    cachedMemory!!.save()
                 }
 
                 TransformationResult.Success(
@@ -109,39 +114,41 @@ class RenameVariableTransformation(
     }
 
     /**
-     * Gets name suggestions for all variables, either from memory or by generating new ones via LLM.
+     * Extracts rename suggestions from memory for variables.
      */
-    private suspend fun getNameSuggestionsForAll(
-        variables: List<PsiVariable>,
-        memory: RenameMemory?
+    private fun extractRenamesFromMemory(
+        variables: List<PsiVariable>
     ): Map<PsiVariable, List<String>> {
-        if (useMemory) {
-            return variables.associateWith { psiVar ->
-                val signature = withReadAction { PsiSignatureGenerator.generateSignature(psiVar) }
-                if (signature == null) {
-                    logger.warn("Could not generate signature for variable ${withReadAction { psiVar.name }}")
-                    return@associateWith emptyList()
-                }
+        return variables.associateWith { psiVar ->
+            val signature = withReadAction { PsiSignatureGenerator.generateSignature(psiVar) }
+            if (signature == null) {
+                logger.warn("Could not generate signature for variable")
+                return@associateWith emptyList()
+            }
 
-                val cachedName = memory?.get(signature)
-                if (cachedName != null) {
-                    logger.info("  ↳ Using cached name for variable ${withReadAction { psiVar.name }}: $cachedName")
-                    listOf(cachedName)
-                } else {
-                    logger.info("  ⊘ Variable ${withReadAction { psiVar.name }} (signature: $signature) not found in memory, skipping rename")
-                    emptyList()
-                }
+            val cachedName = cachedMemory?.get(signature)
+            if (cachedName != null) {
+                logger.info("  ↳ Using cached rename: $signature -> $cachedName")
+                listOf(cachedName)
+            } else {
+                logger.info("  ⊘ Signature not found in memory: $signature")
+                emptyList()
             }
-        } else {
-            // Write mode: batch-generate all names in a single LLM call
-            val batchRenamings = generateNewVariableNames(variables)
-            return variables.associateWith { psiVar ->
-                val varName = withReadAction { psiVar.name }
-                val renaming = batchRenamings.find { it.originalName == varName }
-                renaming?.suggestions?.let {
-                    withReadAction { buildSuggestionList(it, psiVar.project) }
-                } ?: emptyList()
-            }
+        }
+    }
+
+    /**
+     * Generates rename suggestions for all variables using LLM.
+     * Uses a single batch LLM call for efficiency.
+     */
+    private suspend fun generateRenames(variables: List<PsiVariable>): Map<PsiVariable, List<String>> {
+        val batchRenamings = generateNewVariableNames(variables)
+        return variables.associateWith { psiVar ->
+            val varName = withReadAction { psiVar.name }
+            val renaming = batchRenamings.find { it.originalName == varName }
+            renaming?.suggestions?.let {
+                withReadAction { buildSuggestionList(it, psiVar.project) }
+            } ?: emptyList()
         }
     }
 
