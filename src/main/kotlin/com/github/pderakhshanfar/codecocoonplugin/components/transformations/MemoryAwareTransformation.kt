@@ -28,31 +28,25 @@ import java.io.File
  * ```
  *
  * **Provides common functionality for:**
- * - Extracting useMemory flag from config
  * - Creating and initializing RenameMemory instances
- * - Determining whether to use LLM or memory mode
+ * - Storing successful renames in memory
  *
  * **Subclasses should:**
  * - Call [getOrCreateMemory] in their apply() method to initialize memory
- * - Use [useMemory] to determine whether to read from memory or generate new names
+ * - Extract `useMemory` config locally to determine mode
+ * - Implement their own memory extraction logic for read mode
+ * - Generate new names via LLM for write mode
  */
 abstract class MemoryAwareTransformation(
     override val config: Map<String, Any>
 ) : SelfManagedTransformation() {
-
-    /**
-     * Whether memory mode is enabled for this transformation.
-     * When true: only uses cached names from memory.
-     * When false: generates names via LLM and stores them in memory.
-     */
-    protected val useMemory: Boolean = config["useMemory"] as? Boolean ?: false
 
     private val logger = thisLogger().withStdout()
 
     /**
      * Cached memory instance, initialized once per transformation.
      */
-    private var cachedMemory: RenameMemory? = null
+    protected var cachedMemory: RenameMemory? = null
 
     /**
      * Creates or retrieves a RenameMemory instance for the given project.
@@ -78,13 +72,8 @@ abstract class MemoryAwareTransformation(
             val projectName = project.basePath?.let { File(it).name } ?: project.name
 
             val memory = RenameMemory(projectName)
-            if (useMemory) {
-                logger.info("  ↳ Memory-based renaming enabled (read mode). Memory file: ${memory.getMemoryFilePath()}")
-                logger.info("    Loaded ${memory.size()} existing rename entries from memory")
-            } else {
-                logger.info("  ↳ LLM-based renaming enabled (write mode). Memory file: ${memory.getMemoryFilePath()}")
-                logger.info("    Loaded ${memory.size()} existing rename entries. New renames will be saved.")
-            }
+            logger.info("  ↳ Rename memory initialized. Memory file: ${memory.getMemoryFilePath()}")
+            logger.info("    Loaded ${memory.size()} existing rename entries from memory")
             memory
         } catch (e: Exception) {
             logger.error("Failed to initialize rename memory", e)
@@ -100,17 +89,18 @@ abstract class MemoryAwareTransformation(
      * **Important**: The signature must be generated _before_ the rename operation,
      * otherwise it will contain the new name instead of the original name.
      *
+     * **Note**: This should only be called when in write mode (generating new renames).
+     * The caller is responsible for checking the mode before calling this method.
+     *
      * @param signature The signature of the element before it was renamed
      * @param newName The new name that was successfully applied
      */
     protected fun storeRenameInMemory(signature: String, newName: String) {
         if (cachedMemory != null) {
-            if (!useMemory) {
-                cachedMemory!!.put(signature, newName)
-                logger.info("      ✓ Stored rename in memory: `$signature` -> `$newName`")
-            }
+            cachedMemory!!.put(signature, newName)
+            logger.info("      ✓ Stored rename in memory: `$signature` -> `$newName`")
         } else {
-            logger.warn("      ✗ Memory is null. Could not store rename for: `\$signature` -> `\$newName`\"")
+            logger.warn("      ✗ Memory is null. Could not store rename for: `$signature` -> `$newName`")
         }
     }
 }
