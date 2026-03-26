@@ -5,7 +5,8 @@ import com.intellij.openapi.diagnostic.thisLogger
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
-import java.io.File
+import java.nio.file.Path
+import kotlin.io.path.*
 
 /**
  * File-based persistent storage implementation of [Memory] interface.
@@ -31,20 +32,18 @@ class PersistentMemory(private val projectName: String, memoryDirPath: String) :
 
     private val logger = thisLogger().withStdout()
 
-    private val memoryFile: File
+    private val memoryFile: Path
     private var memoryData: MemoryState
 
     init {
         // Sanitize project name for use in filename
         val sanitizedName = sanitizeProjectName(projectName)
 
-        // Convert path to File and ensure memory directory exists
-        val memoryDir = File(memoryDirPath)
-        if (!memoryDir.exists()) {
-            memoryDir.mkdirs()
-        }
+        // Convert path to Path and ensure memory directory exists
+        val memoryDir = Path(memoryDirPath)
+        memoryDir.createDirectories()
 
-        memoryFile = File(memoryDir, "$sanitizedName.json")
+        memoryFile = memoryDir.resolve("$sanitizedName.json")
         memoryData = loadFromDisk()
     }
 
@@ -94,7 +93,7 @@ class PersistentMemory(private val projectName: String, memoryDirPath: String) :
         if (loaded.projectName != projectName) {
             throw IllegalStateException(
                 "Memory file project name mismatch: expected '$projectName', found '${loaded.projectName}'. " +
-                "Memory file: ${memoryFile.absolutePath}"
+                "Memory file: ${memoryFile.absolutePathString()}"
             )
         }
 
