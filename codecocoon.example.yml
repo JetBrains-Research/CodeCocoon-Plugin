@@ -4,6 +4,13 @@ projectRoot: "/path/to/project/root"
 # Optional: limit transformations to these files (relative to the root). Leave empty to target the entire project
 files: []
 
+# Optional: directory where memory files are stored (for deterministic rename transformations)
+# If not specified, defaults to '.codecocoon-memory' in the same directory as this config file
+# Can be:
+#   - Absolute path: "/absolute/path/to/memory"
+#   - Relative path: "my-memory-dir" (relative to this config file's directory)
+memoryDir: ".codecocoon-memory"
+
 # The transformation pipeline. Order matters. Each transformation has:
 #   - id: unique identifier
 #   - config: arbitrary nested settings; only the selected transformation should interpret it

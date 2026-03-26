@@ -10,6 +10,8 @@ package com.github.pderakhshanfar.codecocoonplugin.config
      val files: List<String> = emptyList(),
      /** Ordered list of transformations to execute */
      val transformations: List<TransformationConfig> = emptyList(),
+     /** Directory where memory files are stored (resolved to absolute path by ConfigLoader) */
+     val memoryDir: String,
  )
 
  /**

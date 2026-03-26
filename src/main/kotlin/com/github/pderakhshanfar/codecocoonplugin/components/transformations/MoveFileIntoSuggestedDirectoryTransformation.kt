@@ -7,6 +7,7 @@ import com.github.pderakhshanfar.codecocoonplugin.components.transformations.Mov
 import com.github.pderakhshanfar.codecocoonplugin.executor.TransformationResult
 import com.github.pderakhshanfar.codecocoonplugin.intellij.logging.withStdout
 import com.github.pderakhshanfar.codecocoonplugin.java.JavaTransformation
+import com.github.pderakhshanfar.codecocoonplugin.memory.Memory
 import com.github.pderakhshanfar.codecocoonplugin.suggestions.SuggestionsApi
 import com.github.pderakhshanfar.codecocoonplugin.transformation.require
 import com.intellij.openapi.application.ApplicationManager
@@ -64,6 +65,7 @@ class MoveFileIntoSuggestedDirectoryTransformation private constructor(
     override fun apply(
         psiFile: PsiFile,
         virtualFile: VirtualFile,
+        memory: Memory<String, String>?
     ): TransformationResult {
         // validate that this is a Java file
         if (psiFile !is PsiJavaFile) {

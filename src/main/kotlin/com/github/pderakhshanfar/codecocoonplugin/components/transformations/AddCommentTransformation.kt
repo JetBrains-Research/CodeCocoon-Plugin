@@ -3,6 +3,7 @@ package com.github.pderakhshanfar.codecocoonplugin.components.transformations
 import com.github.pderakhshanfar.codecocoonplugin.common.Language
 import com.github.pderakhshanfar.codecocoonplugin.executor.TransformationResult
 import com.github.pderakhshanfar.codecocoonplugin.intellij.psi.document
+import com.github.pderakhshanfar.codecocoonplugin.memory.Memory
 import com.github.pderakhshanfar.codecocoonplugin.transformation.TextBasedTransformation
 import com.github.pderakhshanfar.codecocoonplugin.transformation.require
 import com.intellij.openapi.vfs.VirtualFile
@@ -31,6 +32,7 @@ class AddCommentTransformation(
     override fun apply(
         psiFile: PsiFile,
         virtualFile: VirtualFile,
+        memory: Memory<String, String>?
     ): TransformationResult = try {
         val comment = createComment(psiFile.name, message)
         val document = psiFile.document()

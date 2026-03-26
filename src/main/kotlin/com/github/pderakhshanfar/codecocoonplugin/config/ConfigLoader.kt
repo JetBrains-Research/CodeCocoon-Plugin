@@ -47,11 +47,49 @@ object ConfigLoader {
                 TransformationConfig(id = id, config = cfg)
             }
 
+            // Resolve memory directory
+            val memoryDir = resolveMemoryDir(root["memoryDir"]?.toString())
+
             return CodeCocoonConfig(
                 projectRoot = projectRoot,
                 files = files,
                 transformations = transformations,
+                memoryDir = memoryDir,
             )
+        }
+    }
+
+    /**
+     * Resolves the memory directory to an absolute path string.
+     *
+     * If [memoryDirPath] is provided:
+     * - If absolute: use as-is
+     * - If relative: resolve relative to config file's parent directory
+     *
+     * If [memoryDirPath] is null:
+     * - Default to ".codecocoon-memory" in config file's parent directory
+     *
+     * @param memoryDirPath Optional memory directory path from YAML
+     * @return Resolved absolute path for memory directory
+     */
+    private fun resolveMemoryDir(memoryDirPath: String?): String {
+        val configPath = System.getProperty("codecocoon.config")
+            ?: throw IllegalStateException("codecocoon.config system property not set")
+
+        val configFile = File(configPath)
+        val configParentDir = configFile.parentFile
+            ?: throw IllegalStateException("Config file has no parent directory: $configPath")
+
+        return if (memoryDirPath != null) {
+            val memoryFile = File(memoryDirPath)
+            if (memoryFile.isAbsolute) {
+                memoryFile.canonicalPath
+            } else {
+                File(configParentDir, memoryDirPath).canonicalPath
+            }
+        } else {
+            // Default to .codecocoon-memory in config parent directory
+            File(configParentDir, ".codecocoon-memory").canonicalPath
         }
     }
 }

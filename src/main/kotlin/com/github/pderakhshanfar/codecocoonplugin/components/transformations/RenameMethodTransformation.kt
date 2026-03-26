@@ -8,6 +8,9 @@ import com.github.pderakhshanfar.codecocoonplugin.executor.TransformationResult
 import com.github.pderakhshanfar.codecocoonplugin.intellij.logging.withStdout
 import com.github.pderakhshanfar.codecocoonplugin.intellij.psi.document
 import com.github.pderakhshanfar.codecocoonplugin.java.JavaTransformation
+import com.github.pderakhshanfar.codecocoonplugin.memory.Memory
+import com.github.pderakhshanfar.codecocoonplugin.memory.PsiSignatureGenerator
+import com.github.pderakhshanfar.codecocoonplugin.transformation.requireOrDefault
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.readAction
 import com.intellij.openapi.diagnostic.thisLogger
@@ -36,9 +39,13 @@ class RenameMethodTransformation(
     }
 
     override fun apply(
-        psiFile: PsiFile, virtualFile: VirtualFile
+        psiFile: PsiFile,
+        virtualFile: VirtualFile,
+        memory: Memory<String, String>?
     ): TransformationResult {
         val result = try {
+            val useMemory = config.requireOrDefault<Boolean>("useMemory", defaultValue = false)
+
             val document = IntelliJAwareTransformation.withReadAction { psiFile.document() }
             val modifiedFiles = mutableSetOf<PsiFile>()
             val value = if (document != null) {
@@ -52,8 +59,10 @@ class RenameMethodTransformation(
 
                 logger.info("  ⏲ Generating rename suggestions for ${publicMethods.size} methods...")
 
-                val renameSuggestions = runBlocking {
-                    publicMethods.associateWith { method -> getNewMethodNames(method) }
+                val renameSuggestions = if (useMemory) {
+                    extractRenamesFromMemory(publicMethods, memory)
+                } else {
+                    runBlocking { generateRenames(publicMethods) }
                 }
 
                 // Try renaming each method with suggestions until one succeeds
@@ -61,11 +70,24 @@ class RenameMethodTransformation(
                     val methodName = IntelliJAwareTransformation.withReadAction { method.name }
                     val suggestions = renameSuggestions[method] ?: return@mapNotNull null
 
+                    // Generate signature BEFORE renaming
+                    val signature = IntelliJAwareTransformation.withReadAction {
+                        PsiSignatureGenerator.generateSignature(method)
+                    }
+                    if (signature == null) {
+                        logger.warn("  ⊘ Could not generate signature for method $methodName")
+                        return@mapNotNull null
+                    }
+
                     // Try each suggestion until one succeeds (no conflicts)
                     for (suggestion in suggestions) {
                         val files = tryRenameMethodAndUsages(psiFile.project, method, suggestion)
                         if (files != null) {
                             modifiedFiles.addAll(files)
+                            if (!useMemory) {
+                                memory?.put(signature, suggestion)
+                                logger.info("      ✓ Stored rename in memory: `$signature` -> `$suggestion`")
+                            }
                             return@mapNotNull method to suggestion
                         }
                     }
@@ -77,6 +99,7 @@ class RenameMethodTransformation(
                 val renamedCount = successfulRenames.size
                 val totalCandidates = publicMethods.size
                 val skipped = totalCandidates - renamedCount
+
                 TransformationResult.Success(
                     message = "Renamed ${renamedCount}/${totalCandidates} methods in ${virtualFile.name}${if (skipped > 0) " (skipped: $skipped)" else ""}",
                     filesModified = modifiedFiles.size
@@ -102,7 +125,43 @@ class RenameMethodTransformation(
         val className: String?
     )
 
-    private suspend fun getNewMethodNames(method: PsiMethod, count: Int = DEFAULT_SUGGESTED_NAMES_SIZE): List<String> {
+    /**
+     * Extracts rename suggestions from memory for methods.
+     */
+    private fun extractRenamesFromMemory(
+        methods: List<PsiMethod>,
+        memory: Memory<String, String>?
+    ): Map<PsiMethod, List<String>> {
+        return methods.associateWith { method ->
+            val signature = IntelliJAwareTransformation.withReadAction {
+                PsiSignatureGenerator.generateSignature(method)
+            }
+            if (signature == null) {
+                logger.warn("Could not generate signature for method")
+                return@associateWith emptyList()
+            }
+
+            val cachedName = memory?.get(signature)
+            if (cachedName != null) {
+                logger.info("  ↳ Using cached rename: $signature -> $cachedName")
+                listOf(cachedName)
+            } else {
+                logger.info("  ⊘ Signature not found in memory: $signature")
+                emptyList()
+            }
+        }
+    }
+
+    /**
+     * Generates rename suggestions for all methods using LLM.
+     */
+    private suspend fun generateRenames(methods: List<PsiMethod>): Map<PsiMethod, List<String>> {
+        return methods.associateWith { method ->
+            generateNewMethodNames(method)
+        }
+    }
+
+    private suspend fun generateNewMethodNames(method: PsiMethod, count: Int = DEFAULT_SUGGESTED_NAMES_SIZE): List<String> {
         // Extract all PSI data in a read action before building the prompt
         val context = readAction {
             MethodContext(
