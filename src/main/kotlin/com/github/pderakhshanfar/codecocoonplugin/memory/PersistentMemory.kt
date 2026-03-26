@@ -14,6 +14,15 @@ import kotlin.io.path.*
  * Stores key-value pairs as JSON in a file within the specified directory.
  * Files are organized by project name to allow tracking multiple projects independently.
  *
+ * **Storage Model:**
+ * Each project gets its own JSON file containing all key-value pairs for that project.
+ * For example, given `memoryDirPath = "/path/to/memory"` and three projects:
+ * - `PersistentMemory("project-A", memoryDirPath)` → `/path/to/memory/project-A.json`
+ * - `PersistentMemory("project-B", memoryDirPath)` → `/path/to/memory/project-B.json`
+ * - `PersistentMemory("nested/project-C", memoryDirPath)` → `/path/to/memory/nested_project-C.json` (sanitized)
+ *
+ * Each JSON file contains all entries for that project, persisted on [save] or [close].
+ *
  * **Thread Safety:** This implementation is not thread-safe. Use external synchronization
  * if accessing from multiple threads.
  *
@@ -32,10 +41,7 @@ class PersistentMemory(private val projectName: String, memoryDirPath: String) :
 
     private val logger = thisLogger().withStdout()
 
-    private val memoryFile: Path
-    private var memoryData: MemoryState
-
-    init {
+    private val memoryFile: Path = run {
         // Sanitize project name for use in filename
         val sanitizedName = sanitizeProjectName(projectName)
 
@@ -43,16 +49,17 @@ class PersistentMemory(private val projectName: String, memoryDirPath: String) :
         val memoryDir = Path(memoryDirPath)
         memoryDir.createDirectories()
 
-        memoryFile = memoryDir.resolve("$sanitizedName.json")
-        memoryData = loadFromDisk()
+        memoryDir.resolve("$sanitizedName.json")
     }
+
+    private var state: MemoryState = loadFromDisk(from = memoryFile)
 
     override fun get(key: String): String? {
         if (key.isBlank()) {
             logger.warn("Attempted to get empty key from memory")
             return null
         }
-        return memoryData.entries[key]
+        return state.entries[key]
     }
 
     override fun put(key: String, value: String): String? {
@@ -65,35 +72,37 @@ class PersistentMemory(private val projectName: String, memoryDirPath: String) :
             return null
         }
 
-        return memoryData.entries.put(key, value)
+        return state.entries.put(key, value)
     }
 
     override fun save() {
-        val jsonString = json.encodeToString(memoryData)
+        val jsonString = json.encodeToString(state)
         memoryFile.writeText(jsonString)
-        logger.info("  ↳ Successfully saved memory for project '$projectName' (${memoryData.entries.size} entries)")
+        logger.info("  ↳ Successfully saved memory for project '$projectName' (${state.entries.size} entries)")
     }
 
-    override fun size(): Int = memoryData.entries.size
+    override fun size(): Int = state.entries.size
 
     /**
      * Loads memory data from disk, or creates a new empty memory if the file doesn't exist.
      * Throws on JSON parse errors or project name mismatches.
+     *
+     * @param from The path to the memory file to load from
      */
-    private fun loadFromDisk(): MemoryState {
-        if (!memoryFile.exists()) {
+    private fun loadFromDisk(from: Path): MemoryState {
+        if (!from.exists()) {
             logger.info("  • No existing memory file found for project '$projectName', creating new memory")
             return MemoryState(projectName, mutableMapOf())
         }
 
-        val jsonString = memoryFile.readText()
+        val jsonString = from.readText()
         val loaded = json.decodeFromString<MemoryState>(jsonString)
 
         // Verify project name matches
         if (loaded.projectName != projectName) {
             throw IllegalStateException(
                 "Memory file project name mismatch: expected '$projectName', found '${loaded.projectName}'. " +
-                "Memory file: ${memoryFile.absolutePathString()}"
+                "Memory file: ${from.absolutePathString()}"
             )
         }
 
