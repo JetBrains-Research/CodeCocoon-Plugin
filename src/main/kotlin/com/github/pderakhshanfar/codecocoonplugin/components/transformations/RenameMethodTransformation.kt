@@ -10,6 +10,7 @@ import com.github.pderakhshanfar.codecocoonplugin.intellij.psi.document
 import com.github.pderakhshanfar.codecocoonplugin.java.JavaTransformation
 import com.github.pderakhshanfar.codecocoonplugin.memory.Memory
 import com.github.pderakhshanfar.codecocoonplugin.memory.PsiSignatureGenerator
+import com.github.pderakhshanfar.codecocoonplugin.transformation.requireOrDefault
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.readAction
 import com.intellij.openapi.diagnostic.thisLogger
@@ -38,10 +39,12 @@ class RenameMethodTransformation(
     }
 
     override fun apply(
-        psiFile: PsiFile, virtualFile: VirtualFile, memory: Memory<String, String>?
+        psiFile: PsiFile,
+        virtualFile: VirtualFile,
+        memory: Memory<String, String>?
     ): TransformationResult {
         val result = try {
-            val useMemory = config["useMemory"] as? Boolean ?: false
+            val useMemory = config.requireOrDefault<Boolean>("useMemory", defaultValue = false)
 
             val document = IntelliJAwareTransformation.withReadAction { psiFile.document() }
             val modifiedFiles = mutableSetOf<PsiFile>()

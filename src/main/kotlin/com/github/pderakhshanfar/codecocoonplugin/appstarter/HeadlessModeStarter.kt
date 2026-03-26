@@ -151,7 +151,6 @@ class HeadlessModeStarter : ApplicationStarter {
      * - Preserves the original order from the config.
      * - Enforces uniqueness: throws on duplicate ids.
      * - Throws on unknown ids and lists known ids to help configuration.
-     *
      */
     private fun mapToTransformations(config: CodeCocoonConfig): List<Transformation> {
         if (config.transformations.isEmpty()) {
