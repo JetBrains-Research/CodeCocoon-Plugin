@@ -1,9 +1,10 @@
-package com.github.pderakhshanfar.codecocoonplugin.components.transformations
+package com.github.pderakhshanfar.codecocoonplugin.components.transformations.renaming
 
 import ai.koog.prompt.dsl.prompt
 import ai.koog.prompt.executor.clients.openai.OpenAIModels
 import com.github.pderakhshanfar.codecocoonplugin.common.LLM
 import com.github.pderakhshanfar.codecocoonplugin.components.transformations.IntelliJAwareTransformation.Companion.withReadAction
+import com.github.pderakhshanfar.codecocoonplugin.components.transformations.SelfManagedTransformation
 import com.github.pderakhshanfar.codecocoonplugin.executor.TransformationResult
 import com.github.pderakhshanfar.codecocoonplugin.intellij.logging.withStdout
 import com.github.pderakhshanfar.codecocoonplugin.intellij.psi.document

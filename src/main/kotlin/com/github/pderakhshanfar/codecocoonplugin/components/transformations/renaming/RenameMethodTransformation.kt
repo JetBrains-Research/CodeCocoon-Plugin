@@ -1,9 +1,11 @@
-package com.github.pderakhshanfar.codecocoonplugin.components.transformations
+package com.github.pderakhshanfar.codecocoonplugin.components.transformations.renaming
 
 import ai.koog.prompt.dsl.prompt
 import ai.koog.prompt.executor.clients.openai.OpenAIModels
 import com.github.pderakhshanfar.codecocoonplugin.common.FileContext
 import com.github.pderakhshanfar.codecocoonplugin.common.LLM
+import com.github.pderakhshanfar.codecocoonplugin.components.transformations.IntelliJAwareTransformation
+import com.github.pderakhshanfar.codecocoonplugin.components.transformations.SelfManagedTransformation
 import com.github.pderakhshanfar.codecocoonplugin.executor.TransformationResult
 import com.github.pderakhshanfar.codecocoonplugin.intellij.logging.withStdout
 import com.github.pderakhshanfar.codecocoonplugin.intellij.psi.document
@@ -46,10 +48,10 @@ class RenameMethodTransformation(
         val result = try {
             val useMemory = config.requireOrDefault<Boolean>("useMemory", defaultValue = false)
 
-            val document = IntelliJAwareTransformation.withReadAction { psiFile.document() }
+            val document = IntelliJAwareTransformation.Companion.withReadAction { psiFile.document() }
             val modifiedFiles = mutableSetOf<PsiFile>()
             val value = if (document != null) {
-                val publicMethods: List<PsiMethod> = IntelliJAwareTransformation.withReadAction {
+                val publicMethods: List<PsiMethod> = IntelliJAwareTransformation.Companion.withReadAction {
                     findAllValidMethods(psiFile)
                 }
 
@@ -67,11 +69,11 @@ class RenameMethodTransformation(
 
                 // Try renaming each method with suggestions until one succeeds
                 val successfulRenames = publicMethods.mapNotNull { method ->
-                    val methodName = IntelliJAwareTransformation.withReadAction { method.name }
+                    val methodName = IntelliJAwareTransformation.Companion.withReadAction { method.name }
                     val suggestions = renameSuggestions[method] ?: return@mapNotNull null
 
                     // Generate signature BEFORE renaming
-                    val signature = IntelliJAwareTransformation.withReadAction {
+                    val signature = IntelliJAwareTransformation.Companion.withReadAction {
                         PsiSignatureGenerator.generateSignature(method)
                     }
                     if (signature == null) {
@@ -133,7 +135,7 @@ class RenameMethodTransformation(
         memory: Memory<String, String>?
     ): Map<PsiMethod, List<String>> {
         return methods.associateWith { method ->
-            val signature = IntelliJAwareTransformation.withReadAction {
+            val signature = IntelliJAwareTransformation.Companion.withReadAction {
                 PsiSignatureGenerator.generateSignature(method)
             }
             if (signature == null) {
@@ -215,7 +217,7 @@ class RenameMethodTransformation(
     ): MutableSet<PsiFile>? {
         return try {
             val oldName = method.name
-            val renameProcessor = IntelliJAwareTransformation.withReadAction {
+            val renameProcessor = IntelliJAwareTransformation.Companion.withReadAction {
                 RenameProcessor(
                     /* project = */ project,
                     /* element = */ method,
@@ -230,7 +232,7 @@ class RenameMethodTransformation(
                 renameProcessor.run()
             }
 
-            val modifiedFiles = IntelliJAwareTransformation.withReadAction {
+            val modifiedFiles = IntelliJAwareTransformation.Companion.withReadAction {
                 val files = mutableSetOf<PsiFile>()
                 renameProcessor.findUsages().forEach { usageInfo ->
                     usageInfo.file?.let { files.add(it) }
