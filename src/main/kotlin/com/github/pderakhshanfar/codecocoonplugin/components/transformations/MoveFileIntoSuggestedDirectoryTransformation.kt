@@ -10,6 +10,7 @@ import com.github.pderakhshanfar.codecocoonplugin.java.JavaTransformation
 import com.github.pderakhshanfar.codecocoonplugin.memory.Memory
 import com.github.pderakhshanfar.codecocoonplugin.suggestions.SuggestionsApi
 import com.github.pderakhshanfar.codecocoonplugin.transformation.require
+import com.github.pderakhshanfar.codecocoonplugin.transformation.requireOrDefault
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.command.WriteCommandAction
 import com.intellij.openapi.diagnostic.thisLogger
@@ -72,9 +73,28 @@ class MoveFileIntoSuggestedDirectoryTransformation private constructor(
             return TransformationResult.Failure("File ${virtualFile.path} is not a Java file")
         }
 
+        // because we have a config version of this transformation,
+        // `useMemory` should have 3 states: undefined (null) / false / true;
+        // so that we don't update memory when config-based transformation is used.
+        val useMemory = config.requireOrDefault<Boolean?>("useMemory", defaultValue = null)
+        val generateWhenNotInMemory = config.requireOrDefault<Boolean>("generateWhenNotInMemory", defaultValue = false)
+
+        // memory is updated when either we generate a filepath suggestion anew
+        // or when we POTENTIALLY generated it for missing value in memory
+        val saveSuggestionInMemory = (useMemory == false) || generateWhenNotInMemory
+
         return try {
-            logger.info("  ⏲ Retrieving suggestion directories for ${virtualFile.name}...")
-            val result = directorySuggestionApi.suggest(psiFile, virtualFile)
+            val signature = virtualFile.path
+
+            val result = if (useMemory == true) {
+                logger.info("  ⏲ Retrieving suggestion directories for '${virtualFile.name}' from memory...")
+                getFilepathSuggestionFromMemory(signature, memory, generateWhenNotInMemory) {
+                    directorySuggestionApi.suggest(psiFile, virtualFile)
+                }
+            } else {
+                logger.info("  ⏲ Retrieving suggestion directories for '${virtualFile.name}' via suggestion API...")
+                directorySuggestionApi.suggest(psiFile, virtualFile)
+            }
 
             if (result.isFailure) {
                 logger.error("    ✗ Failed to get directory suggestions")
@@ -91,6 +111,9 @@ class MoveFileIntoSuggestedDirectoryTransformation private constructor(
                 project = psiFile.project,
                 fileToMove = psiFile,
                 suggestions = suggestedDirectories,
+                memory = memory,
+                signature = signature,
+                saveSuggestionInMemory = saveSuggestionInMemory,
             )
         } catch (e: Exception) {
             logger.error("  ✗ Failed to move file ${virtualFile.name}", e)
@@ -98,10 +121,49 @@ class MoveFileIntoSuggestedDirectoryTransformation private constructor(
         }
     }
 
+    /**
+     * Tries to find the entry in the memory:
+     * 1. When present, return the value from the memory.
+     * 2. When missing AND generation on missing entry requested -> call [generate].
+     */
+    private fun getFilepathSuggestionFromMemory(
+        signature: String,
+        memory: Memory<String, String>?,
+        generateWhenNotInMemory: Boolean,
+        generate: () -> Result<List<String>>,
+    ): Result<List<String>> {
+        val storedFilepathSuggestion = memory?.get(signature)
+        return when {
+            storedFilepathSuggestion != null -> {
+                logger.info("    ↳ Suggestion successfully found in memory: '$storedFilepathSuggestion'")
+                Result.success(listOf(storedFilepathSuggestion))
+            }
+            // when no suggestion is missing in memory but generation is allowed,
+            // return the newly generated suggestion instead
+            generateWhenNotInMemory -> {
+                logger.info("    ↳ Suggestion NOT found in memory, generating a new one...")
+                generate()
+            }
+            else -> {
+                logger.info("    ✗ Suggestion NOT found in memory (generateWhenNotInMemory=false)")
+                Result.failure(TransformationStepFailed(
+                    "No filepath suggestion found in memory for '$signature'"
+                ))
+            }
+        }
+    }
+
+    /**
+     * Tries to move the given [fileToMove] into one of the given [suggestions].
+     * When successful, saves the suggestion by [signature] in [memory] if [saveSuggestionInMemory] is `true`.
+     */
     fun tryToMoveFileIntoSuggestedDirectory(
         project: Project,
         fileToMove: PsiFile,
-        suggestions: List<String>
+        suggestions: List<String>,
+        memory: Memory<String, String>?,
+        signature: String,
+        saveSuggestionInMemory: Boolean,
     ): TransformationResult {
         val filename = withReadAction { fileToMove.name }
 
@@ -207,8 +269,14 @@ class MoveFileIntoSuggestedDirectoryTransformation private constructor(
                     modifiedFiles to summary
                 }
 
+                // saving the applied suggestion in memory
+                if (memory != null && saveSuggestionInMemory) {
+                    memory.put(signature, suggestion)
+                    logger.info("    ↳ Saved suggestion '$suggestion' under signature '$signature' in memory")
+                }
+
                 return TransformationResult.Success(
-                    message = "Successfully moved $filename into $suggestion.\n  Usage Summary:\n$usageSummary",
+                    message = "Successfully moved '$filename' into '$suggestion'.\n  Usage Summary:\n$usageSummary",
                     filesModified,
                 )
             }
