@@ -428,14 +428,15 @@ sealed class DirectorySuggestionApi {
                         withReadAction {
                             // when the text is too big, provide only declarations as content;
                             // otherwise, truncate the full text to a threshold and pass as content.
-                            val threshold = 300
-                            val text = psiFile.text
-                            val textLength = text.length
-                            val truncatedText = text.take(threshold) + if (textLength > threshold) "..." else ""
+                            val linesThreshold = 280
+                            val textLines = psiFile.text.lines()
+                            val truncatedText = textLines.take(linesThreshold) + if (textLines.size > linesThreshold) "..." else ""
 
                             val content = when {
-                                (textLength > threshold) && (psiFile is PsiJavaFile) -> psiFile.declarations() ?: truncatedText
-                                else -> truncatedText
+                                (textLines.size > linesThreshold) && (psiFile is PsiJavaFile) -> {
+                                    psiFile.declarations() ?: truncatedText.joinToString("\n")
+                                }
+                                else -> truncatedText.joinToString("\n")
                             }
 
                             return@withReadAction content
