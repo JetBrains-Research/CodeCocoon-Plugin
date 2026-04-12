@@ -64,9 +64,11 @@ class RenameClassTransformation(
                         generateRenames(eligibleClasses)
                     }
                 }
+
                 // memory is updated when either we generate renames anew
                 // or when we POTENTIALLY generated renames for missing entries
                 val saveRenamesInMemory = !useMemory || generateWhenNotInMemory
+
 
                 val successfulRenames = eligibleClasses.mapNotNull { psiClass ->
                     val className = withReadAction { psiClass.name }
