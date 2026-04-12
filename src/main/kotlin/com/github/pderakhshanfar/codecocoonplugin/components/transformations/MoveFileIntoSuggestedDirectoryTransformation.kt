@@ -429,8 +429,9 @@ sealed class DirectorySuggestionApi {
                             // when the text is too big, provide only declarations as content;
                             // otherwise, truncate the full text to a threshold and pass as content.
                             val threshold = 300
-                            val textLength = psiFile.text.length
-                            val truncatedText = psiFile.text.take(threshold) + if (textLength > threshold) "..." else ""
+                            val text = psiFile.text
+                            val textLength = text.length
+                            val truncatedText = text.take(threshold) + if (textLength > threshold) "..." else ""
 
                             val content = when {
                                 (textLength > threshold) && (psiFile is PsiJavaFile) -> psiFile.declarations() ?: truncatedText
