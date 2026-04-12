@@ -115,7 +115,7 @@ fun PsiClass.declaration(): String {
     }
 
     // Add method signatures
-    for (method in clazz.allMethods) {
+    for (method in clazz.methods) {
         if (!method.isConstructor) {
             val modifiers = method.modifierList.text
             val returnType = method.returnType?.presentableText ?: "void"
