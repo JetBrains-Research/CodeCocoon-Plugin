@@ -6,6 +6,7 @@ import com.github.pderakhshanfar.codecocoonplugin.components.transformations.Mov
 import com.github.pderakhshanfar.codecocoonplugin.components.transformations.MoveFileIntoSuggestedDirectoryTransformation.Companion.withConfig
 import com.github.pderakhshanfar.codecocoonplugin.executor.TransformationResult
 import com.github.pderakhshanfar.codecocoonplugin.intellij.logging.withStdout
+import com.github.pderakhshanfar.codecocoonplugin.intellij.psi.declarations
 import com.github.pderakhshanfar.codecocoonplugin.java.JavaTransformation
 import com.github.pderakhshanfar.codecocoonplugin.memory.Memory
 import com.github.pderakhshanfar.codecocoonplugin.suggestions.SuggestionsApi
@@ -423,9 +424,21 @@ sealed class DirectorySuggestionApi {
                     token = token,
                     projectRoot = projectRoot,
                     filepath = virtualFile.path,
-                    // TODO: extract only declarations if the file is big
                     content = {
-                        withReadAction { psiFile.text }
+                        withReadAction {
+                            // when the text is too big, provide only declarations as content;
+                            // otherwise, truncate the full text to a threshold and pass as content.
+                            val threshold = 300
+                            val textLength = psiFile.text.length
+                            val truncatedText = psiFile.text.take(threshold) + if (textLength > threshold) "..." else ""
+
+                            val content = when {
+                                (textLength > threshold) && (psiFile is PsiJavaFile) -> psiFile.declarations() ?: truncatedText
+                                else -> truncatedText
+                            }
+
+                            return@withReadAction content
+                        }
                     },
                     existingOnly = false,
                     maxAgentIterations =maxAgentIterations
