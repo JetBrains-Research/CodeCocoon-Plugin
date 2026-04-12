@@ -145,7 +145,7 @@ class RenameMethodTransformation(
         methods: List<PsiMethod>,
         memory: Memory<String, String>?,
         generateWhenNotInMemory: Boolean,
-    ): RenameSuggestions<PsiMethod> {
+    ): Renaming<PsiMethod> {
         val methodsWithMissingSuggestions = mutableListOf<PsiMethod>()
 
         val suggestions = methods.associateWith { method ->
@@ -184,17 +184,17 @@ class RenameMethodTransformation(
             suggestions
         }
 
-        return RenameSuggestions(finalSuggestions)
+        return Renaming(finalSuggestions)
     }
 
     /**
      * Generates rename suggestions for all methods using LLM.
      */
-    private suspend fun generateRenames(methods: List<PsiMethod>): RenameSuggestions<PsiMethod> {
+    private suspend fun generateRenames(methods: List<PsiMethod>): Renaming<PsiMethod> {
         val suggestions = methods.associateWith { method ->
             generateNewMethodNames(method)
         }
-        return RenameSuggestions(suggestions)
+        return Renaming(suggestions)
     }
 
     private suspend fun generateNewMethodNames(method: PsiMethod, count: Int = DEFAULT_SUGGESTED_NAMES_SIZE): List<String> {

@@ -128,7 +128,7 @@ class RenameVariableTransformation(
         variables: List<PsiVariable>,
         memory: Memory<String, String>?,
         generateWhenNotInMemory: Boolean,
-    ): RenameSuggestions<PsiVariable> {
+    ): Renaming<PsiVariable> {
         val variablesWithMissingSuggestions = mutableListOf<PsiVariable>()
 
         val suggestions = variables.associateWith { psiVar ->
@@ -165,14 +165,14 @@ class RenameVariableTransformation(
             suggestions
         }
 
-        return RenameSuggestions(finalSuggestions)
+        return Renaming(finalSuggestions)
     }
 
     /**
      * Generates rename suggestions for all variables using LLM.
      * Uses a single batch LLM call for efficiency.
      */
-    private suspend fun generateRenames(variables: List<PsiVariable>): RenameSuggestions<PsiVariable> {
+    private suspend fun generateRenames(variables: List<PsiVariable>): Renaming<PsiVariable> {
         val batchRenamings = generateNewVariableNames(variables)
         val suggestions = variables.associateWith { psiVar ->
             val varName = withReadAction { psiVar.name }
@@ -181,7 +181,7 @@ class RenameVariableTransformation(
                 withReadAction { buildSuggestionList(it, psiVar.project) }
             } ?: emptyList()
         }
-        return RenameSuggestions(suggestions)
+        return Renaming(suggestions)
     }
 
     @Serializable

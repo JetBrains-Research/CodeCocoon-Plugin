@@ -138,7 +138,7 @@ class RenameClassTransformation(
         classes: List<PsiClass>,
         memory: Memory<String, String>?,
         generateWhenNotInMemory: Boolean,
-    ): RenameSuggestions<PsiClass> {
+    ): Renaming<PsiClass> {
         val classesWithMissingSuggestions = mutableListOf<PsiClass>()
 
         val suggestions = classes.associateWith { psiClass ->
@@ -175,17 +175,17 @@ class RenameClassTransformation(
             suggestions
         }
 
-        return RenameSuggestions(finalSuggestions)
+        return Renaming(finalSuggestions)
     }
 
     /**
      * Generates rename suggestions for all classes using LLM.
      */
-    private suspend fun generateRenames(classes: List<PsiClass>): RenameSuggestions<PsiClass> {
+    private suspend fun generateRenames(classes: List<PsiClass>): Renaming<PsiClass> {
         val suggestions = classes.associateWith { psiClass ->
             generateNewClassNames(psiClass)
         }
-        return RenameSuggestions(suggestions)
+        return Renaming(suggestions)
     }
 
     private suspend fun generateNewClassNames(psiClass: PsiClass, count: Int = DEFAULT_SUGGESTED_NAMES_SIZE): List<String> {
