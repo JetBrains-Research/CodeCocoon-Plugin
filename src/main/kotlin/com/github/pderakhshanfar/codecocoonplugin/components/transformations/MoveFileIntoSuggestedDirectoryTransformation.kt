@@ -354,7 +354,7 @@ class MoveFileIntoSuggestedDirectoryTransformation private constructor(
         fun withAI(config: Map<String, Any>, token: String) = MoveFileIntoSuggestedDirectoryTransformation(
             id = AI.ID,
             config,
-            directorySuggestionApi = DirectorySuggestionApi.AI(token)
+            directorySuggestionApi = DirectorySuggestionApi.AI(config, token)
         )
 
         fun withConfig(config: Map<String, Any>) = MoveFileIntoSuggestedDirectoryTransformation(
@@ -401,11 +401,22 @@ sealed class DirectorySuggestionApi {
     abstract fun suggest(psiFile: PsiFile, virtualFile: VirtualFile): Result<List<String>>
 
     // implementations
-    class AI(private val token: String) : DirectorySuggestionApi() {
+    class AI(
+        private val config: Map<String, Any>,
+        private val token: String,
+    ) : DirectorySuggestionApi() {
+        private val logger = thisLogger().withStdout()
+
         override fun suggest(psiFile: PsiFile, virtualFile: VirtualFile): Result<List<String>> {
             val projectRoot = psiFile.project.basePath ?: return Result.failure(
                 TransformationStepFailed("Project root not found.")
             )
+
+            // for larger projects, it may be necessary to increase
+            // the iteration threshold to avoid suggestion search failures
+            val maxAgentIterations = config.requireOrDefault<Int>("maxAgentIterations", defaultValue = 50)
+
+            logger.info("    ⏲ Running AI suggestion API with maxAgentIterations=$maxAgentIterations")
 
             return runBlocking {
                 SuggestionsApi.suggestNewDirectory(
@@ -417,6 +428,7 @@ sealed class DirectorySuggestionApi {
                         withReadAction { psiFile.text }
                     },
                     existingOnly = false,
+                    maxAgentIterations =maxAgentIterations
                 )
             }
         }
