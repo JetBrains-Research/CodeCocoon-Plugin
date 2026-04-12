@@ -80,12 +80,18 @@ class MoveFileIntoSuggestedDirectoryTransformation private constructor(
         val useMemory = config.requireOrDefault<Boolean?>("useMemory", defaultValue = null)
         val generateWhenNotInMemory = config.requireOrDefault<Boolean>("generateWhenNotInMemory", defaultValue = false)
 
-        // memory is updated when either we generate a filepath suggestion anew
-        // or when we POTENTIALLY generated it for missing value in memory
-        val saveSuggestionInMemory = (useMemory == false) || generateWhenNotInMemory
+        // memory is updated when either we generate a filepath suggestion anew (useMemory == false)
+        // or when we POTENTIALLY generated it for missing value in memory (useMemory == true && generateWhenNotInMemory).
+        // `useMemory == null` must remain strict no-memory behavior for the config-based variant.
+        val saveSuggestionInMemory = (useMemory == false) || (useMemory == true && generateWhenNotInMemory)
+
+        val projectRoot = psiFile.project.basePath
+            ?: return TransformationResult.Failure("Project root not found")
 
         return try {
-            val signature = virtualFile.path
+            // Use a project-relative path as the signature so memory lookups are stable
+            // regardless of the absolute checkout location across different runs.
+            val signature = Paths.get(projectRoot).relativize(Paths.get(virtualFile.path)).toString()
 
             val result = if (useMemory == true) {
                 logger.info("  ⏲ Retrieving suggestion directories for '${virtualFile.name}' from memory...")
@@ -270,10 +276,17 @@ class MoveFileIntoSuggestedDirectoryTransformation private constructor(
                     modifiedFiles to summary
                 }
 
-                // saving the applied suggestion in memory
+                // saving the applied suggestion in memory as a project-relative path
+                // so it remains valid across different checkout locations.
                 if (memory != null && saveSuggestionInMemory) {
-                    memory.put(signature, suggestion)
-                    logger.info("    ↳ Saved suggestion '$suggestion' under signature '$signature' in memory")
+                    val relativeSuggestion = try {
+                        Paths.get(projectRoot).relativize(Paths.get(suggestion)).toString()
+                    } catch (e: IllegalArgumentException) {
+                        // fallback: store as-is when paths cannot be relativized (e.g., different roots)
+                        suggestion
+                    }
+                    memory.put(signature, relativeSuggestion)
+                    logger.info("    ↳ Saved suggestion '$relativeSuggestion' under signature '$signature' in memory")
                 }
 
                 return TransformationResult.Success(
