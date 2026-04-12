@@ -47,6 +47,7 @@ class RenameMethodTransformation(
     ): TransformationResult {
         val result = try {
             val useMemory = config.requireOrDefault<Boolean>("useMemory", defaultValue = false)
+            val generateWhenNotInMemory = config.requireOrDefault<Boolean>("generateWhenNotInMemory", defaultValue = false)
 
             val document = IntelliJAwareTransformation.Companion.withReadAction { psiFile.document() }
             val modifiedFiles = mutableSetOf<PsiFile>()
@@ -61,19 +62,26 @@ class RenameMethodTransformation(
 
                 logger.info("  ⏲ Generating rename suggestions for ${publicMethods.size} methods...")
 
-                val renameSuggestions = if (useMemory) {
-                    extractRenamesFromMemory(publicMethods, memory)
-                } else {
-                    runBlocking { generateRenames(publicMethods) }
+                val renaming = runBlocking {
+                    if (useMemory) {
+                        extractRenamesFromMemory(publicMethods, memory, generateWhenNotInMemory)
+                    } else {
+                        generateRenames(publicMethods)
+                    }
                 }
+
+                // memory is updated when either we generate renames anew
+                // or when we POTENTIALLY generated renames for missing entries
+                val saveRenamesInMemory = !useMemory || generateWhenNotInMemory
+
 
                 // Try renaming each method with suggestions until one succeeds
                 val successfulRenames = publicMethods.mapNotNull { method ->
                     val methodName = IntelliJAwareTransformation.Companion.withReadAction { method.name }
-                    val suggestions = renameSuggestions[method] ?: return@mapNotNull null
+                    val suggestions = renaming.suggestions[method] ?: return@mapNotNull null
 
                     // Generate signature BEFORE renaming
-                    val signature = IntelliJAwareTransformation.Companion.withReadAction {
+                    val signature = IntelliJAwareTransformation.withReadAction {
                         PsiSignatureGenerator.generateSignature(method)
                     }
                     if (signature == null) {
@@ -86,7 +94,7 @@ class RenameMethodTransformation(
                         val files = tryRenameMethodAndUsages(psiFile.project, method, suggestion)
                         if (files != null) {
                             modifiedFiles.addAll(files)
-                            if (!useMemory) {
+                            if (saveRenamesInMemory) {
                                 memory?.put(signature, suggestion)
                                 logger.info("      ✓ Stored rename in memory: `$signature` -> `$suggestion`")
                             }
@@ -94,7 +102,7 @@ class RenameMethodTransformation(
                         }
                     }
                     // No valid suggestion worked
-                    logger.info("  ⊘ Skipped renaming method $methodName, with suggestions: $suggestions")
+                    logger.info("  ⊘ Skipped renaming method `$methodName` (suggestions: $suggestions)")
                     null
                 }
 
@@ -129,13 +137,19 @@ class RenameMethodTransformation(
 
     /**
      * Extracts rename suggestions from memory for methods.
+     *
+     * When [generateWhenNotInMemory] is true, generates new suggestions
+     * for all methods whose suggestions are missing in memory.
      */
-    private fun extractRenamesFromMemory(
+    private suspend fun extractRenamesFromMemory(
         methods: List<PsiMethod>,
-        memory: Memory<String, String>?
-    ): Map<PsiMethod, List<String>> {
-        return methods.associateWith { method ->
-            val signature = IntelliJAwareTransformation.Companion.withReadAction {
+        memory: Memory<String, String>?,
+        generateWhenNotInMemory: Boolean,
+    ): RenameSuggestions<PsiMethod> {
+        val methodsWithMissingSuggestions = mutableListOf<PsiMethod>()
+
+        val suggestions = methods.associateWith { method ->
+            val signature = IntelliJAwareTransformation.withReadAction {
                 PsiSignatureGenerator.generateSignature(method)
             }
             if (signature == null) {
@@ -148,19 +162,39 @@ class RenameMethodTransformation(
                 logger.info("  ↳ Using cached rename: $signature -> $cachedName")
                 listOf(cachedName)
             } else {
-                logger.info("  ⊘ Signature not found in memory: $signature")
+                logger.warn("  ⊘ Signature not found in memory: $signature")
+                if (generateWhenNotInMemory) {
+                    methodsWithMissingSuggestions.add(method)
+                }
                 emptyList()
             }
         }
+
+        val finalSuggestions = if (generateWhenNotInMemory && methodsWithMissingSuggestions.isNotEmpty()) {
+            logger.info("  ↳ Generating missing rename suggestions for ${methodsWithMissingSuggestions.size} methods (i.e., generateWhenNotInMemory=true)...")
+            val generated = generateRenames(methodsWithMissingSuggestions)
+            buildMap {
+                for (method in methods) {
+                    val suggestionsA = suggestions[method] ?: emptyList()
+                    val suggestionsB = generated.suggestions[method] ?: emptyList()
+                    put(method, suggestionsA + suggestionsB)
+                }
+            }
+        } else {
+            suggestions
+        }
+
+        return RenameSuggestions(finalSuggestions)
     }
 
     /**
      * Generates rename suggestions for all methods using LLM.
      */
-    private suspend fun generateRenames(methods: List<PsiMethod>): Map<PsiMethod, List<String>> {
-        return methods.associateWith { method ->
+    private suspend fun generateRenames(methods: List<PsiMethod>): RenameSuggestions<PsiMethod> {
+        val suggestions = methods.associateWith { method ->
             generateNewMethodNames(method)
         }
+        return RenameSuggestions(suggestions)
     }
 
     private suspend fun generateNewMethodNames(method: PsiMethod, count: Int = DEFAULT_SUGGESTED_NAMES_SIZE): List<String> {
