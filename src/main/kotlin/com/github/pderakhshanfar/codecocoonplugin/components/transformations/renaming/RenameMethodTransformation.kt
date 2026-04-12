@@ -49,10 +49,10 @@ class RenameMethodTransformation(
             val useMemory = config.requireOrDefault<Boolean>("useMemory", defaultValue = false)
             val generateWhenNotInMemory = config.requireOrDefault<Boolean>("generateWhenNotInMemory", defaultValue = false)
 
-            val document = IntelliJAwareTransformation.Companion.withReadAction { psiFile.document() }
+            val document = IntelliJAwareTransformation.withReadAction { psiFile.document() }
             val modifiedFiles = mutableSetOf<PsiFile>()
             val value = if (document != null) {
-                val publicMethods: List<PsiMethod> = IntelliJAwareTransformation.Companion.withReadAction {
+                val publicMethods: List<PsiMethod> = IntelliJAwareTransformation.withReadAction {
                     findAllValidMethods(psiFile)
                 }
 
@@ -77,7 +77,7 @@ class RenameMethodTransformation(
 
                 // Try renaming each method with suggestions until one succeeds
                 val successfulRenames = publicMethods.mapNotNull { method ->
-                    val methodName = IntelliJAwareTransformation.Companion.withReadAction { method.name }
+                    val methodName = IntelliJAwareTransformation.withReadAction { method.name }
                     val suggestions = renaming.suggestions[method] ?: return@mapNotNull null
 
                     // Generate signature BEFORE renaming
@@ -251,7 +251,7 @@ class RenameMethodTransformation(
     ): MutableSet<PsiFile>? {
         return try {
             val oldName = method.name
-            val renameProcessor = IntelliJAwareTransformation.Companion.withReadAction {
+            val renameProcessor = IntelliJAwareTransformation.withReadAction {
                 RenameProcessor(
                     /* project = */ project,
                     /* element = */ method,
@@ -266,7 +266,7 @@ class RenameMethodTransformation(
                 renameProcessor.run()
             }
 
-            val modifiedFiles = IntelliJAwareTransformation.Companion.withReadAction {
+            val modifiedFiles = IntelliJAwareTransformation.withReadAction {
                 val files = mutableSetOf<PsiFile>()
                 renameProcessor.findUsages().forEach { usageInfo ->
                     usageInfo.file?.let { files.add(it) }
