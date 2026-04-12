@@ -82,7 +82,7 @@ class MoveFileIntoSuggestedDirectoryTransformation private constructor(
 
         // memory is updated when either we generate a filepath suggestion anew
         // or when we POTENTIALLY generated it for missing value in memory
-        val saveSuggestionInMemory = (useMemory == false) || generateWhenNotInMemory
+        val saveSuggestionInMemory = (useMemory == false) || ((useMemory == true) && generateWhenNotInMemory)
 
         return try {
             val signature = virtualFile.path
