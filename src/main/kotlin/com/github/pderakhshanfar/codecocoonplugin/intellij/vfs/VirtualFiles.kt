@@ -33,7 +33,11 @@ fun Project.relativeToRootOrAbsPath(virtualFile: VirtualFile): String {
     val projectRoot = this.guessProjectDir()?.path?.toPath()
     return when {
         // trying to make it relative to the project root
-        projectRoot != null -> virtualFile.path.toPath().relativeTo(projectRoot).toString()
+        projectRoot != null -> try {
+            virtualFile.path.toPath().relativeTo(projectRoot).toString()
+        } catch (_: IllegalArgumentException) {
+            virtualFile.path
+        }
         else -> virtualFile.path
     }
 }
