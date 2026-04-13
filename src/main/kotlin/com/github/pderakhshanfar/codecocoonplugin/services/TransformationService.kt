@@ -141,7 +141,7 @@ class TransformationService {
             var failureCount = 0
             var skippedCount = 0
 
-            // collect and filter file context (together with virtual files
+            // Collect and filter file contexts together with their virtual files
             logger.info("[TransformationService] Collecting file contexts for ${files.size} files...")
             val filteredFileContexts = buildList {
                 for (filePath in files) {
