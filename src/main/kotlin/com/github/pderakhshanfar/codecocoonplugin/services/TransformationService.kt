@@ -2,10 +2,13 @@ package com.github.pderakhshanfar.codecocoonplugin.services
 
 import com.github.pderakhshanfar.codecocoonplugin.common.FileContext
 import com.github.pderakhshanfar.codecocoonplugin.common.Language
+import com.github.pderakhshanfar.codecocoonplugin.common.VirtualFileNotFound
 import com.github.pderakhshanfar.codecocoonplugin.components.executor.IntelliJTransformationExecutor
 import com.github.pderakhshanfar.codecocoonplugin.config.CodeCocoonConfig
 import com.github.pderakhshanfar.codecocoonplugin.executor.TransformationResult
 import com.github.pderakhshanfar.codecocoonplugin.intellij.logging.withStdout
+import com.github.pderakhshanfar.codecocoonplugin.intellij.vfs.findVirtualFile
+import com.github.pderakhshanfar.codecocoonplugin.intellij.vfs.relativeToRootOrAbsPath
 import com.github.pderakhshanfar.codecocoonplugin.memory.PersistentMemory
 import com.github.pderakhshanfar.codecocoonplugin.transformation.Transformation
 import com.intellij.openapi.application.smartReadAction
@@ -128,8 +131,8 @@ class TransformationService {
         val files = listProjectFiles(project, config.projectRoot, includeOnly = config.files)
         val executor = IntelliJTransformationExecutor(project)
 
-        // Create global memory instance for the entire project
-        // Memory is automatically saved via .use {} when block exits
+        // Create a global memory instance for the entire project
+        // Memory is automatically saved via .use {} when the block exits
         val projectName = project.basePath?.let { File(it).name } ?: project.name
         PersistentMemory(projectName, config.memoryDir).use { memory ->
             logger.info("[TransformationService] Created global memory for project '$projectName'")
@@ -138,29 +141,56 @@ class TransformationService {
             var failureCount = 0
             var skippedCount = 0
 
-            for (filePath in files) {
-                val context = createFileContext(filePath)
+            // collect and filter file context (together with virtual files
+            logger.info("[TransformationService] Collecting file contexts for ${files.size} files...")
+            val filteredFileContexts = buildList {
+                for (filePath in files) {
+                    val result = createFileContext(project, filePath)
 
-                if (!fileFilter(context)) {
-                    skippedCount++
-                    continue
+                    if (result.isFailure) {
+                        logger.error(
+                            "  ✗ Failed to create file context for file: '$filePath'. Skipping this filepath.",
+                            result.exceptionOrNull(),
+                        )
+                        continue
+                    }
+
+                    val context = result.getOrThrow()
+                    // filter unwanted files
+                    if (!fileFilter(context)) {
+                        skippedCount++
+                        continue
+                    }
+                    add(context)
                 }
+            }
+            logger.info("[TransformationService] Successfully collected (and filtered) ${filteredFileContexts.size} file contexts")
+
+            // for each file, apply all transformations
+            for (context in filteredFileContexts) {
+                val filepath = project.relativeToRootOrAbsPath(context.virtualFile)
+                logger.info("[TransformationService] Applying ${transformations.size} transformations to '$filepath':")
 
                 for (transformation in transformations) {
                     if (transformation.accepts(context)) {
-                        logger.info("Applying ${transformation.id} to $filePath")
+                        // NOTE: a virtual file contains an update-to-date fs filepath;
+                        // since some transformation may change the file location,
+                        // making `context.relativePath` obsolete.
+                        val actualFilepath = project.relativeToRootOrAbsPath(context.virtualFile)
+                        logger.info("  ⏲ Applying ${transformation.id} to '$actualFilepath'" +
+                                if (context.relativePath != actualFilepath) " (initially '${context.relativePath}' (likely renamed))" else "")
 
                         when (val result = executor.execute(transformation, context, memory)) {
                             is TransformationResult.Success -> {
-                                logger.info("  ✓ ${result.message}")
+                                logger.info("    ✓ ${result.message}")
                                 successCount++
                             }
                             is TransformationResult.Failure -> {
-                                logger.error("  ✗ ${result.error}", result.exception)
+                                logger.error("    ✗ ${result.error}", result.exception)
                                 failureCount++
                             }
                             is TransformationResult.Skipped -> {
-                                logger.info("  ⊘ Skipped: ${result.reason}")
+                                logger.info("    ⊘ Skipped: ${result.reason}")
                                 skippedCount++
                             }
                         }
@@ -172,12 +202,22 @@ class TransformationService {
         }
     }
 
-    private fun createFileContext(relativePath: String): FileContext {
+    private fun createFileContext(
+        project: Project,
+        relativePath: String,
+    ): Result<FileContext> {
+        val virtualFile = project.findVirtualFile(relativePath)
+            ?: return Result.failure(VirtualFileNotFound(
+                "Project '${project.name}' doesn't contain file: '$relativePath'"))
+
         val extension = relativePath.substringAfterLast('.', "")
-        return FileContext(
+        val context = FileContext(
+            virtualFile = virtualFile,
             relativePath = relativePath,
             extension = extension,
             language = Language.fromExtension(extension)
         )
+
+        return Result.success(context)
     }
 }

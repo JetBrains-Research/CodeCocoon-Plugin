@@ -5,7 +5,6 @@ import com.github.pderakhshanfar.codecocoonplugin.components.transformations.Int
 import com.github.pderakhshanfar.codecocoonplugin.executor.TransformationExecutor
 import com.github.pderakhshanfar.codecocoonplugin.executor.TransformationResult
 import com.github.pderakhshanfar.codecocoonplugin.intellij.psi.psiFile
-import com.github.pderakhshanfar.codecocoonplugin.intellij.vfs.findVirtualFile
 import com.github.pderakhshanfar.codecocoonplugin.memory.Memory
 import com.github.pderakhshanfar.codecocoonplugin.transformation.Transformation
 import com.intellij.openapi.application.ReadResult
@@ -46,32 +45,30 @@ class IntelliJTransformationExecutor(
     private suspend fun executeIntelliJTransformation(
         transformation: IntelliJAwareTransformation,
         context: FileContext,
-        memory: Memory<String, String>?
+        memory: Memory<String, String>?,
     ): TransformationResult {
-        val virtualFile = project.findVirtualFile(context)
-            ?: return TransformationResult.Failure(
-                "Project '${project.name}' doesn't contain file: ${context.relativePath}")
+        val virtualFile = context.virtualFile
+        return when {
+            // Self-managed transformations handle their own write actions/commands
+            transformation.selfManaged() -> {
+                // Get PSI file in a read action
+                val psiFile = readAction {
+                    project.psiFile(virtualFile)
+                } ?: return TransformationResult.Failure("Cannot get PSI for file: ${context.relativePath}")
 
-        // Self-managed transformations handle their own write actions/commands
-        if (transformation.selfManaged()) {
-            // Get PSI file in a read action
-            val psiFile = readAction {
-                project.psiFile(virtualFile)
-            } ?: return TransformationResult.Failure("Cannot get PSI for file: ${context.relativePath}")
-
-            // Run transformation directly - self-managed transformations handle EDT requirements internally
-            return transformation.apply(psiFile, virtualFile, memory)
-        }
-
-        // Regular transformations need writeCommandAction wrapper
-        return readAndWriteAction {
-            val psiFile = project.psiFile(virtualFile)
-                ?: return@readAndWriteAction ReadResult.value(
-                    TransformationResult.Failure("Cannot get PSI for file: ${context.relativePath}")
-                )
-
-            writeCommandAction(project, transformation.id) {
+                // Run transformation directly - self-managed transformations handle EDT requirements internally
                 transformation.apply(psiFile, virtualFile, memory)
+            }
+            else -> readAndWriteAction {
+                // Regular transformations need to use `writeCommandAction` wrapper
+                val psiFile = project.psiFile(virtualFile)
+                    ?: return@readAndWriteAction ReadResult.value(
+                        TransformationResult.Failure("Cannot get PSI for file: ${context.relativePath}")
+                    )
+
+                writeCommandAction(project, transformation.id) {
+                    transformation.apply(psiFile, virtualFile, memory)
+                }
             }
         }
     }

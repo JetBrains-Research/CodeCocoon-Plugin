@@ -17,6 +17,11 @@ class TransformationStepFailed(
     cause: Throwable? = null
 ) : CodeCocoonException(message, cause)
 
+class VirtualFileNotFound(
+    message: String,
+    cause: Throwable? = null
+) : CodeCocoonException(message, cause)
+
 class ParsingException(
     message: String,
     cause: Throwable? = null
