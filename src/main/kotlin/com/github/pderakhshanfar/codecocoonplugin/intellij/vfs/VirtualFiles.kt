@@ -24,3 +24,16 @@ fun Path.refreshAndFindVirtualFile(): VirtualFile? = this.toString().refreshAndF
 fun Project.findVirtualFile(relativePath: String): VirtualFile? {
     return this.guessProjectDir()?.findFileByRelativePath(relativePath)
 }
+
+/**
+ * Attempts to return [virtualFile]'s path relative to the project root.
+ * Otherwise, returns the [virtualFile]'s absolute path as-is (i.e., `virtualFile.path`).
+ */
+fun Project.relativeToRootOrAbsPath(virtualFile: VirtualFile): String {
+    val projectRoot = this.guessProjectDir()?.path?.toPath()
+    return when {
+        // trying to make it relative to the project root
+        projectRoot != null -> virtualFile.path.toPath().relativeTo(projectRoot).toString()
+        else -> virtualFile.path
+    }
+}
