@@ -235,5 +235,30 @@ intellijPlatformTesting {
                 )
             }
         }
+
+        // Custom task for metamorphic text transformation (runs within IntelliJ platform)
+        register("transformMetamorphicTexts") {
+            task {
+                // Program arguments for the transformation
+                args(listOf("transform-texts"))
+
+                // Pass parameters via system properties
+                val memoryFile = project.findProperty("memoryFile") as? String ?: ""
+                val problemStatement = project.findProperty("problemStatement") as? String ?: ""
+                val interfaceDesc = project.findProperty("interfaceDesc") as? String ?: ""
+                val outputFile = project.findProperty("outputFile") as? String ?: ""
+
+                // JVM arguments
+                jvmArgs(
+                    "-Xmx4G",
+                    "-Djava.awt.headless=true",
+                    "--add-exports", "java.base/jdk.internal.vm=ALL-UNNAMED",
+                    "-Dtransform.memoryFile=${memoryFile}",
+                    "-Dtransform.problemStatement=${problemStatement}",
+                    "-Dtransform.interfaceDesc=${interfaceDesc}",
+                    "-Dtransform.outputFile=${outputFile}",
+                )
+            }
+        }
     }
 }

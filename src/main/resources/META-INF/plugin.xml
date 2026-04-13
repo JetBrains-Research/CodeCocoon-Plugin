@@ -13,5 +13,7 @@
     <extensions defaultExtensionNs="com.intellij">
         <appStarter implementation="com.github.pderakhshanfar.codecocoonplugin.appstarter.HeadlessModeStarter"
         id="codecocoon"/>
+        <appStarter implementation="com.github.pderakhshanfar.codecocoonplugin.appstarter.TransformTextsStarter"
+        id="transform-texts"/>
     </extensions>
 </idea-plugin>
