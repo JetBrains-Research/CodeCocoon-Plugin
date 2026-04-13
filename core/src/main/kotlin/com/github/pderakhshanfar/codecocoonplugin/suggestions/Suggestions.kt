@@ -29,7 +29,8 @@ object SuggestionsApi {
         projectRoot: String,
         filepath: String,
         content: () -> String,
-        existingOnly: Boolean = false
+        existingOnly: Boolean = false,
+        maxAgentIterations: Int = 50,
     ): Result<List<String>> = suggestNewDirectoryImpl(
         token = token,
         model = model,
@@ -37,5 +38,6 @@ object SuggestionsApi {
         filepath = filepath,
         content = content,
         existingOnly = existingOnly,
+        maxAgentIterations = maxAgentIterations,
     )
 }

@@ -28,7 +28,8 @@ internal suspend fun suggestNewDirectoryImpl(
     projectRoot: String,
     filepath: String,
     content: () -> String,
-    existingOnly: Boolean = false,
+    existingOnly: Boolean,
+    maxAgentIterations: Int,
 ): Result<List<String>> {
     val executor = LLM.createGrazieExecutor(token)
 
@@ -40,7 +41,7 @@ internal suspend fun suggestNewDirectoryImpl(
                 system(buildSystemPrompt(projectRoot, existingOnly))
             },
             model = model,
-            maxAgentIterations = 50
+            maxAgentIterations = maxAgentIterations,
         ),
         toolRegistry = ToolRegistry {
             tool(ListDirectoryTool(JVMFileSystemProvider.ReadOnly))

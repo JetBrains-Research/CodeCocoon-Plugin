@@ -2,6 +2,9 @@ package com.github.pderakhshanfar.codecocoonplugin.appstarter
 
 import com.github.pderakhshanfar.codecocoonplugin.components.transformations.*
 import com.github.pderakhshanfar.codecocoonplugin.components.transformations.MoveFileIntoSuggestedDirectoryTransformation
+import com.github.pderakhshanfar.codecocoonplugin.components.transformations.renaming.RenameClassTransformation
+import com.github.pderakhshanfar.codecocoonplugin.components.transformations.renaming.RenameMethodTransformation
+import com.github.pderakhshanfar.codecocoonplugin.components.transformations.renaming.RenameVariableTransformation
 import com.github.pderakhshanfar.codecocoonplugin.config.CodeCocoonConfig
 import com.github.pderakhshanfar.codecocoonplugin.config.ConfigLoader
 import com.github.pderakhshanfar.codecocoonplugin.intellij.JvmProjectConfigurator
