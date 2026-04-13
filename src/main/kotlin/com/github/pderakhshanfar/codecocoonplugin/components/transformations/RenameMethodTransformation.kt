@@ -57,51 +57,88 @@ class RenameMethodTransformation(
                     return TransformationResult.Skipped("No matching methods found in ${virtualFile.name}")
                 }
 
-                logger.info("  ⏲ Generating rename suggestions for ${publicMethods.size} methods...")
-
-                val renameSuggestions = if (useMemory) {
-                    extractRenamesFromMemory(publicMethods, memory)
-                } else {
-                    runBlocking { generateRenames(publicMethods) }
+                // Group methods into overload families to ensure overloaded methods get the same name
+                val overloadFamilies = IntelliJAwareTransformation.withReadAction {
+                    groupMethodsByOverloads(publicMethods)
                 }
 
-                // Try renaming each method with suggestions until one succeeds
-                val successfulRenames = publicMethods.mapNotNull { method ->
-                    val methodName = IntelliJAwareTransformation.withReadAction { method.name }
-                    val suggestions = renameSuggestions[method] ?: return@mapNotNull null
+                logger.info("  ⏲ Generating rename suggestions for ${publicMethods.size} methods (${overloadFamilies.size} overload families)...")
 
-                    // Generate signature BEFORE renaming
-                    val signature = IntelliJAwareTransformation.withReadAction {
-                        PsiSignatureGenerator.generateSignature(method)
-                    }
-                    if (signature == null) {
-                        logger.warn("  ⊘ Could not generate signature for method $methodName")
-                        return@mapNotNull null
-                    }
+                // Generate suggestions for each overload family (not individual methods)
+                val familySuggestions = if (useMemory) {
+                    extractRenamesFromMemoryForFamilies(overloadFamilies, memory)
+                } else {
+                    runBlocking { generateRenamesForFamilies(overloadFamilies) }
+                }
 
-                    // Try each suggestion until one succeeds (no conflicts)
-                    for (suggestion in suggestions) {
-                        val files = tryRenameMethodAndUsages(psiFile.project, method, suggestion)
-                        if (files != null) {
-                            modifiedFiles.addAll(files)
-                            if (!useMemory) {
-                                memory?.put(signature, suggestion)
-                                logger.info("      ✓ Stored rename in memory: `$signature` -> `$suggestion`")
+                // Track successful renames across all families
+                var renamedMethodCount = 0
+
+                // Try renaming each overload family
+                for (family in overloadFamilies) {
+                    val suggestions = familySuggestions[family] ?: continue
+                    val familyName = IntelliJAwareTransformation.withReadAction { family.methodName }
+
+                    // Generate signatures BEFORE renaming for all methods in the family
+                    val methodSignatures = if (!useMemory) {
+                        family.methods.associateWith { method ->
+                            IntelliJAwareTransformation.withReadAction {
+                                PsiSignatureGenerator.generateSignature(method)
                             }
-                            return@mapNotNull method to suggestion
+                        }
+                    } else {
+                        emptyMap()
+                    }
+
+                    // Try each suggestion until one succeeds for ALL methods in the family
+                    var familyRenamed = false
+                    for (suggestion in suggestions) {
+                        // Skip if suggestion is the same as the original name (no-op rename)
+                        if (suggestion == familyName) {
+                            continue
+                        }
+
+                        // Attempt to rename all methods in the family to the same name
+                        val allSucceeded = family.methods.all { method ->
+                            val files = tryRenameMethodAndUsages(psiFile.project, method, suggestion)
+                            if (files != null) {
+                                modifiedFiles.addAll(files)
+
+                                // Store in memory if not using memory mode (using pre-generated signature)
+                                if (!useMemory) {
+                                    val signature = methodSignatures[method]
+                                    if (signature != null) {
+                                        memory?.put(signature, suggestion)
+                                        logger.info("      ✓ Stored rename in memory: `$signature` -> `$suggestion`")
+                                    } else {
+                                        logger.warn("      ⊘ Could not generate signature for method before renaming")
+                                    }
+                                }
+                                true
+                            } else {
+                                false
+                            }
+                        }
+
+                        if (allSucceeded) {
+                            renamedMethodCount += family.methods.size
+                            val methodCountInfo = if (family.methods.size > 1) " (${family.methods.size} overloads)" else ""
+                            logger.info("    • Renamed `$familyName` to `$suggestion`$methodCountInfo")
+                            familyRenamed = true
+                            break
                         }
                     }
-                    // No valid suggestion worked
-                    logger.info("  ⊘ Skipped renaming method $methodName, with suggestions: $suggestions")
-                    null
+
+                    if (!familyRenamed) {
+                        logger.info("  ⊘ Skipped renaming method $familyName, suggestions: $suggestions")
+                    }
                 }
 
-                val renamedCount = successfulRenames.size
                 val totalCandidates = publicMethods.size
-                val skipped = totalCandidates - renamedCount
+                val skipped = totalCandidates - renamedMethodCount
 
                 TransformationResult.Success(
-                    message = "Renamed ${renamedCount}/${totalCandidates} methods in ${virtualFile.name}${if (skipped > 0) " (skipped: $skipped)" else ""}",
+                    message = "Renamed ${renamedMethodCount}/${totalCandidates} methods in ${virtualFile.name}${if (skipped > 0) " (skipped: $skipped)" else ""}",
                     filesModified = modifiedFiles.size
                 )
             } else {
@@ -126,38 +163,87 @@ class RenameMethodTransformation(
     )
 
     /**
-     * Extracts rename suggestions from memory for methods.
+     * Represents a family of overloaded methods (same name, same containing class).
      */
-    private fun extractRenamesFromMemory(
-        methods: List<PsiMethod>,
-        memory: Memory<String, String>?
-    ): Map<PsiMethod, List<String>> {
-        return methods.associateWith { method ->
-            val signature = IntelliJAwareTransformation.withReadAction {
-                PsiSignatureGenerator.generateSignature(method)
-            }
-            if (signature == null) {
-                logger.warn("Could not generate signature for method")
-                return@associateWith emptyList()
-            }
-
-            val cachedName = memory?.get(signature)
-            if (cachedName != null) {
-                logger.info("  ↳ Using cached rename: $signature -> $cachedName")
-                listOf(cachedName)
-            } else {
-                logger.info("  ⊘ Signature not found in memory: $signature")
-                emptyList()
-            }
+    private data class OverloadFamily(
+        val methodName: String,
+        val containingClass: PsiClass,
+        val methods: List<PsiMethod>
+    ) {
+        /**
+         * Returns a representative method for generating rename suggestions.
+         * Prefers methods with bodies (non-abstract) for better context.
+         */
+        fun getRepresentative(): PsiMethod {
+            return methods.firstOrNull { it.body != null } ?: methods.first()
         }
     }
 
     /**
-     * Generates rename suggestions for all methods using LLM.
+     * Groups methods into overload families.
+     * Methods with the same name in the same containing class are grouped together.
      */
-    private suspend fun generateRenames(methods: List<PsiMethod>): Map<PsiMethod, List<String>> {
-        return methods.associateWith { method ->
-            generateNewMethodNames(method)
+    private fun groupMethodsByOverloads(methods: List<PsiMethod>): List<OverloadFamily> {
+        val grouped = methods.groupBy { method ->
+            val className = method.containingClass?.qualifiedName ?: ""
+            val methodName = method.name
+            "$className.$methodName"
+        }
+
+        return grouped.map { (_, methodsInFamily) ->
+            val representative = methodsInFamily.first()
+            OverloadFamily(
+                methodName = representative.name,
+                containingClass = representative.containingClass!!,
+                methods = methodsInFamily
+            )
+        }
+    }
+
+    /**
+     * Extracts rename suggestions from memory for overload families.
+     * Returns the same suggestion for all methods in a family.
+     * Checks ALL methods in the family to find cached names.
+     */
+    private fun extractRenamesFromMemoryForFamilies(
+        families: List<OverloadFamily>,
+        memory: Memory<String, String>?
+    ): Map<OverloadFamily, List<String>> {
+        return families.associateWith { family ->
+            // Check all methods in the family (not just the representative)
+            // This handles cases where methods were stored in different orders
+            for (method in family.methods) {
+                val signature = IntelliJAwareTransformation.withReadAction {
+                    PsiSignatureGenerator.generateSignature(method)
+                }
+
+                if (signature == null) {
+                    logger.warn("Could not generate signature for method ${family.methodName}")
+                    continue
+                }
+
+                val cachedName = memory?.get(signature)
+                if (cachedName != null) {
+                    logger.info("  ↳ Using cached rename: $signature -> $cachedName")
+                    return@associateWith listOf(cachedName)
+                }
+            }
+
+            // No cached name found for any method in the family
+            logger.info("  ⊘ Signature not found in memory: ${family.methodName}")
+            emptyList()
+        }
+    }
+
+    /**
+     * Generates rename suggestions for overload families using LLM.
+     * Returns the same suggestions for all methods in a family.
+     */
+    private suspend fun generateRenamesForFamilies(families: List<OverloadFamily>): Map<OverloadFamily, List<String>> {
+        return families.associateWith { family ->
+            // Generate suggestions based on the representative method
+            val representative = family.getRepresentative()
+            generateNewMethodNames(representative)
         }
     }
 
