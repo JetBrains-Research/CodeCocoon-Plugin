@@ -1,7 +1,8 @@
 package com.github.pderakhshanfar.codecocoonplugin.appstarter
 
-import com.github.pderakhshanfar.codecocoonplugin.components.transformations.*
+import com.github.pderakhshanfar.codecocoonplugin.components.transformations.AddCommentTransformation
 import com.github.pderakhshanfar.codecocoonplugin.components.transformations.MoveFileIntoSuggestedDirectoryTransformation
+import com.github.pderakhshanfar.codecocoonplugin.components.transformations.TransformationRegistry
 import com.github.pderakhshanfar.codecocoonplugin.components.transformations.renaming.RenameClassTransformation
 import com.github.pderakhshanfar.codecocoonplugin.components.transformations.renaming.RenameMethodTransformation
 import com.github.pderakhshanfar.codecocoonplugin.components.transformations.renaming.RenameVariableTransformation
@@ -11,15 +12,18 @@ import com.github.pderakhshanfar.codecocoonplugin.intellij.JvmProjectConfigurato
 import com.github.pderakhshanfar.codecocoonplugin.intellij.logging.withStdout
 import com.github.pderakhshanfar.codecocoonplugin.services.TransformationService
 import com.github.pderakhshanfar.codecocoonplugin.transformation.Transformation
+import com.intellij.application.options.CodeStyle
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.ApplicationStarter
 import com.intellij.openapi.components.service
 import com.intellij.openapi.diagnostic.thisLogger
+import com.intellij.openapi.project.Project
 import com.intellij.openapi.project.ProjectManager
 import com.intellij.openapi.util.Disposer
 import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.openapi.vfs.VfsUtil
+import com.intellij.psi.codeStyle.JavaCodeStyleSettings
 import kotlinx.coroutines.runBlocking
 import java.io.File
 import java.nio.file.Paths
@@ -44,6 +48,9 @@ class HeadlessModeStarter : ApplicationStarter {
 
         logger.info("[CodeCocoon Starter] Starting with project path: $projectPath")
 
+        // setting all props to System
+        setupSystemProperties()
+
         // Clean .idea folder to ensure fresh indexing
         cleanIdeaFolder(projectPath)
 
@@ -56,6 +63,10 @@ class HeadlessModeStarter : ApplicationStarter {
             try {
                 // Open and resolve the project
                 val project = openProject(projectPath, disposable)
+                // configure project code style (e.g., avoid import optimization)
+                configureCodeStyle(project)
+
+                logger.info("[CodeCocoon Starter] Code style configured to prevent wildcard imports")
 
                 val transformations = mapToTransformations(config)
 
@@ -89,6 +100,33 @@ class HeadlessModeStarter : ApplicationStarter {
                 throw e
             }
         }
+    }
+
+    private fun setupSystemProperties() {
+        // Disable all refactoring dialogs
+        System.setProperty("ide.performance.skip.refactoring.dialogs", "true")
+    }
+
+    /**
+     * Configures code style settings to prevent wildcard imports.
+     *
+     * This sets the import thresholds to very high values (9999) so that imports
+     * are never collapsed into wildcards (e.g., `import com.example.*`) during
+     * refactoring operations when `commitAllDocuments()` is called.
+     *
+     * **Important:** Call this method once when the project is opened/initialized,
+     * before running any transformations.
+     *
+     * @param project The project whose code style settings should be configured
+     */
+    private fun configureCodeStyle(project: Project) {
+        val settings = CodeStyle.getSettings(project)
+        val javaSettings = settings.getCustomSettings(JavaCodeStyleSettings::class.java)
+
+        // Set thresholds to 9999 to effectively disable wildcard imports
+        // This prevents IntelliJ from collapsing multiple imports into import com.example.*
+        javaSettings.classCountToUseImportOnDemand = 9999
+        javaSettings.namesCountToUseImportOnDemand = 9999
     }
 
     private fun cleanIdeaFolder(projectPath: String) {
