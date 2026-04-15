@@ -54,7 +54,7 @@ class IntelliJTransformationExecutor(
                 // Get PSI file in a read action
                 val psiFile = readAction {
                     project.psiFile(virtualFile)
-                } ?: return TransformationResult.Failure("Cannot get PSI for file: ${context.relativePath}")
+                } ?: return TransformationResult.Failure("Cannot get PSI for file: ${virtualFile.path}")
 
                 // Run transformation directly - self-managed transformations handle EDT requirements internally
                 transformation.apply(psiFile, virtualFile, memory)
@@ -63,7 +63,7 @@ class IntelliJTransformationExecutor(
                 // Regular transformations need to use `writeCommandAction` wrapper
                 val psiFile = project.psiFile(virtualFile)
                     ?: return@readAndWriteAction ReadResult.value(
-                        TransformationResult.Failure("Cannot get PSI for file: ${context.relativePath}")
+                        TransformationResult.Failure("Cannot get PSI for file: ${virtualFile.path}")
                     )
 
                 writeCommandAction(project, transformation.id) {
