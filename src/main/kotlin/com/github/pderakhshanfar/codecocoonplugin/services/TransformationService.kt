@@ -150,12 +150,12 @@ class TransformationService {
                         config = config,
                         filePath,
                     )
-
                     if (result.isFailure) {
                         logger.error(
                             "  ✗ Failed to create file context for file: '$filePath'. Skipping this filepath.",
                             result.exceptionOrNull(),
                         )
+                        skippedCount++
                         continue
                     }
 
