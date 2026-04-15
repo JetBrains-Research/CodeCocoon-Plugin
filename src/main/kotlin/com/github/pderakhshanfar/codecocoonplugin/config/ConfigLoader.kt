@@ -1,5 +1,6 @@
 package com.github.pderakhshanfar.codecocoonplugin.config
 
+import com.github.pderakhshanfar.codecocoonplugin.intellij.vfs.refreshAndFindVirtualFile
 import org.yaml.snakeyaml.Yaml
 import java.io.File
 import java.io.InputStream
@@ -50,8 +51,12 @@ object ConfigLoader {
             // Resolve memory directory
             val memoryDir = resolveMemoryDir(root["memoryDir"]?.toString())
 
+            // if projectRoot is present, try to search for the corresponding virtual file
+            val projectRootFile = projectRoot?.refreshAndFindVirtualFile()
+
             return CodeCocoonConfig(
                 projectRoot = projectRoot,
+                projectRootFile = projectRootFile,
                 files = files,
                 transformations = transformations,
                 memoryDir = memoryDir,

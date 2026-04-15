@@ -8,6 +8,7 @@ import com.github.pderakhshanfar.codecocoonplugin.components.transformations.Sel
 import com.github.pderakhshanfar.codecocoonplugin.executor.TransformationResult
 import com.github.pderakhshanfar.codecocoonplugin.intellij.logging.withStdout
 import com.github.pderakhshanfar.codecocoonplugin.intellij.psi.document
+import com.github.pderakhshanfar.codecocoonplugin.intellij.vfs.relativeToRootOrAbsPath
 import com.github.pderakhshanfar.codecocoonplugin.java.JavaTransformation
 import com.github.pderakhshanfar.codecocoonplugin.memory.Memory
 import com.github.pderakhshanfar.codecocoonplugin.memory.PsiSignatureGenerator
@@ -399,7 +400,9 @@ class RenameVariableTransformation(
         }
 
         if (filteredVariables.isNotEmpty()) {
-            logger.info("  ↳ Found ${filteredVariables.size} matching variables in ${psiFile.virtualFile?.path}")
+            // prettify filepath attempting to make it relative to the project root
+            val filepath = psiFile.virtualFile?.let { psiFile.project.relativeToRootOrAbsPath(it) } ?: "<in-memory>"
+            logger.info("  ↳ Found ${filteredVariables.size} matching variables in '$filepath'")
         }
         return filteredVariables
     }

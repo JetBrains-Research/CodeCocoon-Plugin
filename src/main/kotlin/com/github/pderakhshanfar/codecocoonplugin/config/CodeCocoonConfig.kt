@@ -1,16 +1,19 @@
 package com.github.pderakhshanfar.codecocoonplugin.config
 
+import com.intellij.openapi.vfs.VirtualFile
+
 /**
  * Top-level configuration for CodeCocoon, loaded from YAML.
  */
  data class CodeCocoonConfig(
-     /** Absolute or project-local path to the root of the project to transform */
+    /** Absolute or project-local path to the root of the project to transform */
      val projectRoot: String? = null,
-     /** Optional list of files relative to the project root. Empty means the entire project */
+    val projectRootFile: VirtualFile? = null,
+    /** Optional list of files relative to the project root. Empty means the entire project */
      val files: List<String> = emptyList(),
-     /** Ordered list of transformations to execute */
+    /** Ordered list of transformations to execute */
      val transformations: List<TransformationConfig> = emptyList(),
-     /** Directory where memory files are stored (resolved to absolute path by ConfigLoader) */
+    /** Directory where memory files are stored (resolved to absolute path by ConfigLoader) */
      val memoryDir: String,
  )
 

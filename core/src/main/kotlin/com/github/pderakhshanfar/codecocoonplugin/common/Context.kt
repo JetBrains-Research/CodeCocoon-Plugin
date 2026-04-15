@@ -1,5 +1,7 @@
 package com.github.pderakhshanfar.codecocoonplugin.common
 
+import com.intellij.openapi.vfs.VirtualFile
+
 /**
  * Supported programming languages
  */
@@ -33,6 +35,7 @@ enum class Language {
  * Serves as a file descriptor.
  */
 data class FileContext(
+    val virtualFile: VirtualFile,
     val relativePath: String,
     val extension: String,
     val language: Language,

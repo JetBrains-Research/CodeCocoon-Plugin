@@ -1,11 +1,11 @@
 package com.github.pderakhshanfar.codecocoonplugin.intellij.vfs
 
-import com.github.pderakhshanfar.codecocoonplugin.common.FileContext
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.project.guessProjectDir
 import com.intellij.openapi.util.io.FileUtil
 import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.openapi.vfs.VirtualFile
+import okio.Path.Companion.toPath
 import java.nio.file.Path
 
 
@@ -19,8 +19,25 @@ fun Path.refreshAndFindVirtualFile(): VirtualFile? = this.toString().refreshAndF
 
 /**
  * Attempts to find a [VirtualFile] by the given relative path
- * [FileContext.relativePath] in the [context].
+ * [relativePath].
  */
-fun Project.findVirtualFile(context: FileContext): VirtualFile? {
-    return this.guessProjectDir()?.findFileByRelativePath(context.relativePath)
+fun Project.findVirtualFile(relativePath: String): VirtualFile? {
+    return this.guessProjectDir()?.findFileByRelativePath(relativePath)
+}
+
+/**
+ * Attempts to return [virtualFile]'s path relative to the project root.
+ * Otherwise, returns the [virtualFile]'s absolute path as-is (i.e., `virtualFile.path`).
+ */
+fun Project.relativeToRootOrAbsPath(virtualFile: VirtualFile): String {
+    val projectRoot = this.guessProjectDir()?.path?.toPath()
+    return when {
+        // trying to make it relative to the project root
+        projectRoot != null -> try {
+            virtualFile.path.toPath().relativeTo(projectRoot).toString()
+        } catch (_: IllegalArgumentException) {
+            virtualFile.path
+        }
+        else -> virtualFile.path
+    }
 }
