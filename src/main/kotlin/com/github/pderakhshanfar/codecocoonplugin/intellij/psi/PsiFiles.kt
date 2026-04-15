@@ -1,13 +1,9 @@
 package com.github.pderakhshanfar.codecocoonplugin.intellij.psi
 
+import com.intellij.openapi.editor.Document
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.vfs.VirtualFile
-import com.intellij.psi.PsiDocumentManager
-import com.intellij.psi.PsiFile
-import com.intellij.psi.PsiManager
-import com.intellij.openapi.editor.Document
-import com.intellij.psi.PsiClass
-import com.intellij.psi.PsiJavaFile
+import com.intellij.psi.*
 
 /**
  * Retrieves the corresponding [PsiFile] for the given [VirtualFile] within this project.
@@ -150,4 +146,30 @@ fun PsiClass.declaration(): String {
     builder.append("}")
 
     return builder.toString().trimEnd()
+}
+
+/**
+ * Checks that all annotations have qualified names and are present in [allowedAnnotations].
+ *
+ * [allowedAnnotations] may contain either fully qualified names
+ * (with package before the annotation name) or simple names.
+ */
+fun List<PsiAnnotation>.allowedAnnotationsOnly(
+    allowedAnnotations: List<String>,
+): Boolean {
+    data class Annotation(
+        val qualifiedName: String?,
+        val simpleName: String?,
+    )
+    val annotations = this.map {
+        Annotation(
+            qualifiedName = it.qualifiedName,
+            simpleName = it.qualifiedName?.substringAfterLast('.'),
+        )
+    }
+    return annotations.all { (qualifiedName, simpleName) ->
+        // qualified name is not null and either
+        // qualified name or simple name must be whitelisted
+        (qualifiedName != null) && (qualifiedName in allowedAnnotations || simpleName in allowedAnnotations)
+    }
 }
