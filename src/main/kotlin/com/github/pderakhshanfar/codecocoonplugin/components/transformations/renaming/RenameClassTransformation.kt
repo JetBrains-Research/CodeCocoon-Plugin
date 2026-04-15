@@ -320,7 +320,7 @@ class RenameClassTransformation(
 
         if (filteredClasses.isNotEmpty()) {
             // prettify filepath attempting to make it relative to the project root
-            val filepath = psiFile.project.relativeToRootOrAbsPath(psiFile.virtualFile)
+            val filepath = psiFile.virtualFile?.let { psiFile.project.relativeToRootOrAbsPath(it) } ?: "<in-memory>"
             logger.info("  ↳ Found ${filteredClasses.size} matching classes in '$filepath'")
         }
         return filteredClasses

@@ -343,7 +343,7 @@ class RenameMethodTransformation(
 
         if (filteredMethods.isNotEmpty()) {
             // prettify filepath attempting to make it relative to the project root
-            val filepath = psiFile.project.relativeToRootOrAbsPath(psiFile.virtualFile)
+            val filepath = psiFile.virtualFile?.let { psiFile.project.relativeToRootOrAbsPath(it) } ?: "<in-memory>"
             logger.info("  ↳ Found ${filteredMethods.size} matching methods in '$filepath'")
         }
         return filteredMethods

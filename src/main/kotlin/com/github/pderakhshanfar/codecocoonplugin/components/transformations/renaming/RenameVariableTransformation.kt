@@ -401,7 +401,7 @@ class RenameVariableTransformation(
 
         if (filteredVariables.isNotEmpty()) {
             // prettify filepath attempting to make it relative to the project root
-            val filepath = psiFile.project.relativeToRootOrAbsPath(psiFile.virtualFile)
+            val filepath = psiFile.virtualFile?.let { psiFile.project.relativeToRootOrAbsPath(it) } ?: "<in-memory>"
             logger.info("  ↳ Found ${filteredVariables.size} matching variables in '$filepath'")
         }
         return filteredVariables
