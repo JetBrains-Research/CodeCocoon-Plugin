@@ -145,7 +145,11 @@ class TransformationService {
             logger.info("[TransformationService] Collecting file contexts for ${files.size} files...")
             val filteredFileContexts = buildList {
                 for (filePath in files) {
-                    val result = createFileContext(project, filePath)
+                    val result = createFileContext(
+                        project = project,
+                        config = config,
+                        filePath,
+                    )
 
                     if (result.isFailure) {
                         logger.error(
@@ -202,11 +206,19 @@ class TransformationService {
         }
     }
 
+    /**
+     * Attempts to find a virtual file for the given [relativePath] in
+     * 1) the project root defined by [config] or 2) in the [project] (if not found in [config]).
+     */
     private fun createFileContext(
         project: Project,
+        config: CodeCocoonConfig,
         relativePath: String,
     ): Result<FileContext> {
-        val virtualFile = project.findVirtualFile(relativePath)
+        // first, attempt to find in the project root file;
+        // then, try in the project.
+        val virtualFile = config.projectRootFile?.findFileByRelativePath(relativePath)
+            ?: project.findVirtualFile(relativePath)
             ?: return Result.failure(VirtualFileNotFound(
                 "Project '${project.name}' doesn't contain file: '$relativePath'"))
 
