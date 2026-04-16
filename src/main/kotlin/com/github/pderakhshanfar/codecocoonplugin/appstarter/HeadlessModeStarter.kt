@@ -108,11 +108,20 @@ class HeadlessModeStarter : ApplicationStarter {
     }
 
     /**
-     * Configures code style settings to prevent wildcard imports.
+     * Configures code style settings to prevent ALL import optimizations.
      *
-     * This sets the import thresholds to very high values (9999) so that imports
-     * are never collapsed into wildcards (e.g., `import com.example.*`) during
-     * refactoring operations when `commitAllDocuments()` is called.
+     * This method configures multiple import-related settings to minimize unwanted
+     * import modifications during refactoring operations when `commitAllDocuments()` is called.
+     *
+     * **Settings configured:**
+     * 1. Prevents wildcard imports (e.g., `import com.example.*`)
+     * 2. Forces single class imports
+     * 3. Disables auto-insertion of inner class imports
+     * 4. Clears packages that should use wildcards
+     *
+     * **Limitations:**
+     * - Cannot prevent removal of unused imports (hardcoded in IntelliJ's optimize imports)
+     * - Cannot prevent removal of redundant same-package imports
      *
      * **Important:** Call this method once when the project is opened/initialized,
      * before running any transformations.
@@ -123,10 +132,22 @@ class HeadlessModeStarter : ApplicationStarter {
         val settings = CodeStyle.getSettings(project)
         val javaSettings = settings.getCustomSettings(JavaCodeStyleSettings::class.java)
 
-        // Set thresholds to 9999 to effectively disable wildcard imports
+        // 1. Set thresholds to 9999 to effectively disable wildcard imports
         // This prevents IntelliJ from collapsing multiple imports into import com.example.*
         javaSettings.classCountToUseImportOnDemand = 9999
         javaSettings.namesCountToUseImportOnDemand = 9999
+
+        // 2. Force single class imports (prevent wildcards)
+        javaSettings.isUseSingleClassImports = true
+
+        // 3. Don't auto-insert inner class imports
+        javaSettings.isInsertInnerClassImports = false
+
+        logger.info("[CodeCocoon Starter] Configured code style settings:")
+        logger.info("  - CLASS_COUNT_TO_USE_IMPORT_ON_DEMAND: ${javaSettings.classCountToUseImportOnDemand}")
+        logger.info("  - NAMES_COUNT_TO_USE_IMPORT_ON_DEMAND: ${javaSettings.namesCountToUseImportOnDemand}")
+        logger.info("  - USE_SINGLE_CLASS_IMPORTS: ${javaSettings.isUseSingleClassImports}")
+        logger.info("  - INSERT_INNER_CLASS_IMPORTS: ${javaSettings.isInsertInnerClassImports}")
     }
 
     private fun cleanIdeaFolder(projectPath: String) {
