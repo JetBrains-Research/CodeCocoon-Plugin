@@ -36,6 +36,11 @@ CodeCocoon is an IntelliJ Platform plugin for **metamorphic testing** of Java pr
    - PSI reads require `readAction { }` or `IntelliJAwareTransformation.withReadAction { }`
    - PSI writes require `writeCommandAction { }` or use self-managed refactoring processors
 
+8. **Import Optimization Prevention**: Code style settings configured to prevent wildcard imports and minimize automatic import modifications
+   - ✅ Prevents wildcard imports (`import package.*`)
+   - ✅ Forces single class imports
+   - ❌ Cannot prevent unused import removal (IntelliJ limitation)
+
 ## Common Tasks
 
 - **Adding a transformation**: Implement `IntelliJAwareTransformation`, register in `TransformationRegistry.kt`
@@ -46,6 +51,7 @@ CodeCocoon is an IntelliJ Platform plugin for **metamorphic testing** of Java pr
 ## When to Consult CLAUDE.md
 
 Refer to [`CLAUDE.md`](./CLAUDE.md) for:
+- **Import optimization prevention** - Detailed explanation of settings and limitations
 - Detailed architecture explanations
 - PSI utilities and helper functions
 - Configuration schema and examples
