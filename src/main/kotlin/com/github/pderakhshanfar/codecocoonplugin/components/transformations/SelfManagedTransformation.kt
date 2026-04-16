@@ -11,11 +11,4 @@ package com.github.pderakhshanfar.codecocoonplugin.components.transformations
  */
 abstract class SelfManagedTransformation : IntelliJAwareTransformation {
     override fun selfManaged(): Boolean = true
-
-    companion object {
-        init {
-            // Disable all refactoring dialogs
-            System.setProperty("ide.performance.skip.refactoring.dialogs", "true")
-        }
-    }
 }

@@ -7,6 +7,7 @@ import com.github.pderakhshanfar.codecocoonplugin.components.transformations.Int
 import com.github.pderakhshanfar.codecocoonplugin.components.transformations.SelfManagedTransformation
 import com.github.pderakhshanfar.codecocoonplugin.executor.TransformationResult
 import com.github.pderakhshanfar.codecocoonplugin.intellij.logging.withStdout
+import com.github.pderakhshanfar.codecocoonplugin.intellij.psi.allowedAnnotationsOnly
 import com.github.pderakhshanfar.codecocoonplugin.intellij.psi.document
 import com.github.pderakhshanfar.codecocoonplugin.intellij.vfs.relativeToRootOrAbsPath
 import com.github.pderakhshanfar.codecocoonplugin.java.JavaTransformation
@@ -29,7 +30,8 @@ import kotlinx.serialization.Serializable
 /**
  * Renames Java classes to an LLM-suggested, semantically similar name and updates usages/overrides.
  *
- * Skips: classes referenced from non-Java files, test class names and annotated classes.
+ * Skips: classes referenced from non-Java files, test class names
+ * and annotated classes (if the annotation is not whitelisted; `whitelistedAnnotations` array as YAML param).
  */
 class RenameClassTransformation(
     override val config: Map<String, Any>
@@ -46,11 +48,17 @@ class RenameClassTransformation(
         val result = try {
             val useMemory = config.requireOrDefault<Boolean>("useMemory", defaultValue = false)
             val generateWhenNotInMemory = config.requireOrDefault<Boolean>("generateWhenNotInMemory", defaultValue = false)
+            val whitelistedAnnotations = config.requireOrDefault<List<String>>("whitelistedAnnotations", defaultValue = emptyList())
 
             val document = withReadAction { psiFile.document() }
             val modifiedFiles = mutableSetOf<PsiFile>()
             val value = if (document != null) {
-                val eligibleClasses: List<PsiClass> = withReadAction { findAllValidClasses(psiFile) }
+                val eligibleClasses: List<PsiClass> = withReadAction {
+                    findAllValidClasses(
+                        psiFile = psiFile,
+                        whitelistedClassAnnotations = whitelistedAnnotations,
+                    )
+                }
 
                 if (eligibleClasses.isEmpty()) {
                     return TransformationResult.Skipped("No matching classes found in ${virtualFile.name}")
@@ -286,7 +294,14 @@ class RenameClassTransformation(
         }
     }
 
-    private fun findAllValidClasses(psiFile: PsiFile): List<PsiClass> {
+    /**
+     * @param psiFile The PSI file to search for classes
+     * @param whitelistedClassAnnotations A list of class annotations that are allowed to be present on the class.
+     */
+    private fun findAllValidClasses(
+        psiFile: PsiFile,
+        whitelistedClassAnnotations: List<String>,
+    ): List<PsiClass> {
         val classes = mutableListOf<PsiClass>()
         psiFile.accept(object : PsiRecursiveElementVisitor() {
             override fun visitElement(element: PsiElement) {
@@ -312,10 +327,14 @@ class RenameClassTransformation(
             // Is not a test
             if (fileIndex.isInTestSourceContent(psiFile.virtualFile)) return@filter false
 
+            // either no annotations or whitelisted ones only
+            val annotationsFilter = cls.annotations.isEmpty()
+                    || cls.annotations.toList().allowedAnnotationsOnly(whitelistedClassAnnotations)
+
             // Basic Filters
             val className = cls.name
             // We need to check for `cls.name.length` > 1 to filter out raw Type classes
-            (className != null) && (className.length > 1) && cls.annotations.isEmpty()
+            (className != null) && (className.length > 1) && annotationsFilter
         }
 
         if (filteredClasses.isNotEmpty()) {

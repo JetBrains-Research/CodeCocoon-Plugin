@@ -8,6 +8,7 @@ import com.github.pderakhshanfar.codecocoonplugin.components.transformations.Int
 import com.github.pderakhshanfar.codecocoonplugin.components.transformations.SelfManagedTransformation
 import com.github.pderakhshanfar.codecocoonplugin.executor.TransformationResult
 import com.github.pderakhshanfar.codecocoonplugin.intellij.logging.withStdout
+import com.github.pderakhshanfar.codecocoonplugin.intellij.psi.allowedAnnotationsOnly
 import com.github.pderakhshanfar.codecocoonplugin.intellij.psi.document
 import com.github.pderakhshanfar.codecocoonplugin.intellij.vfs.relativeToRootOrAbsPath
 import com.github.pderakhshanfar.codecocoonplugin.java.JavaTransformation
@@ -26,7 +27,6 @@ import com.intellij.psi.search.searches.ReferencesSearch
 import com.intellij.refactoring.rename.RenameProcessor
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.Serializable
-import kotlin.collections.emptyList
 
 
 class RenameMethodTransformation(
@@ -49,12 +49,17 @@ class RenameMethodTransformation(
         val result = try {
             val useMemory = config.requireOrDefault<Boolean>("useMemory", defaultValue = false)
             val generateWhenNotInMemory = config.requireOrDefault<Boolean>("generateWhenNotInMemory", defaultValue = false)
+            // list of allowed method annotations, e.g. ["NotNull"]
+            val whitelistedAnnotations = config.requireOrDefault<List<String>>("whitelistedAnnotations", defaultValue = emptyList())
 
             val document = IntelliJAwareTransformation.withReadAction { psiFile.document() }
             val modifiedFiles = mutableSetOf<PsiFile>()
             val value = if (document != null) {
                 val publicMethods: List<PsiMethod> = IntelliJAwareTransformation.withReadAction {
-                    findAllValidMethods(psiFile)
+                    findAllValidMethods(
+                        psiFile = psiFile,
+                        whitelistedMethodAnnotations = whitelistedAnnotations
+                    )
                 }
 
                 if (publicMethods.isEmpty()) {
@@ -288,7 +293,14 @@ class RenameMethodTransformation(
         }
     }
 
-    private fun findAllValidMethods(psiFile: PsiFile): List<PsiMethod> {
+    /**
+     * @param psiFile The PSI file to search for methods
+     * @param whitelistedMethodAnnotations A list of method annotations that are allowed to be present on the method.
+     */
+    private fun findAllValidMethods(
+        psiFile: PsiFile,
+        whitelistedMethodAnnotations: List<String>,
+    ): List<PsiMethod> {
         val methods = mutableListOf<PsiMethod>()
         psiFile.accept(object : PsiRecursiveElementVisitor() {
             override fun visitElement(element: PsiElement) {
@@ -333,7 +345,11 @@ class RenameMethodTransformation(
             if (fileIndex.isInTestSourceContent(psiFile.virtualFile)) return@filter false
 
             // Basic Filters
-            method.annotations.isEmpty() &&
+            // either no method annotations or whitelisted ones only
+            val annotationsFilter = method.annotations.isEmpty()
+                    || method.annotations.toList().allowedAnnotationsOnly(whitelistedMethodAnnotations)
+
+            annotationsFilter &&
                     !method.isConstructor &&
                     method.name !in DISALLOWED_METHOD_NAMES &&
                     !method.name.startsWith("get") &&
