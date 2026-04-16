@@ -36,8 +36,6 @@ CodeCocoon is an IntelliJ Platform plugin for **metamorphic testing** of Java pr
    - PSI reads require `readAction { }` or `IntelliJAwareTransformation.withReadAction { }`
    - PSI writes require `writeCommandAction { }` or use self-managed refactoring processors
 
-8. **Import Optimization**: Explicitly **disabled** via system properties to prevent unwanted wildcard imports during refactoring operations
-
 ## Common Tasks
 
 - **Adding a transformation**: Implement `IntelliJAwareTransformation`, register in `TransformationRegistry.kt`
