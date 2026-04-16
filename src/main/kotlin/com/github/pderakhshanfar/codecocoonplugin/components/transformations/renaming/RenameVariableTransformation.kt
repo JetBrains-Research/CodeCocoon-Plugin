@@ -46,6 +46,7 @@ class RenameVariableTransformation(
         val result = try {
             val useMemory = config.requireOrDefault<Boolean>("useMemory", defaultValue = false)
             val generateWhenNotInMemory = config.requireOrDefault<Boolean>("generateWhenNotInMemory", defaultValue = false)
+            val searchInComments = config.requireOrDefault<Boolean>("searchInComments", defaultValue = false)
 
             val document = withReadAction { psiFile.document() }
             val modifiedFiles = mutableSetOf<PsiFile>()
@@ -84,7 +85,7 @@ class RenameVariableTransformation(
 
                     // Try each suggestion until one succeeds (no conflicts)
                     for (suggestion in suggestions) {
-                        val files = tryRenameVariableAndUsages(psiFile.project, psiVar, suggestion)
+                        val files = tryRenameVariableAndUsages(psiFile.project, psiVar, suggestion, searchInComments)
                         if (files != null) {
                             modifiedFiles.addAll(files)
                             if (saveRenamesInMemory) {
@@ -306,18 +307,18 @@ class RenameVariableTransformation(
     }
 
     private fun tryRenameVariableAndUsages(
-        project: Project, psiVariable: PsiVariable, newName: String
+        project: Project,
+        psiVariable: PsiVariable,
+        newName: String,
+        searchInComments: Boolean,
     ): MutableSet<PsiFile>? {
         return try {
             val oldName = withReadAction { psiVariable.name } ?: return null
-            // isSearchInComments needs to be false. If true, it would breaks functionality by changing string literals.
-            // example would be mappings of `PathVariable` from Spring.
-            // `@param [paramName]` definitions in the Javadocs are still being renamed.
             val renameProcessor = withReadAction { RenameProcessor(
                     /* project = */ project,
                     /* element = */ psiVariable,
                     /* newName = */ newName,
-                    /* isSearchInComments= */ false,
+                    /* isSearchInComments= */ searchInComments,
                     /* isSearchTextOccurrences = */ false
                 )
             }

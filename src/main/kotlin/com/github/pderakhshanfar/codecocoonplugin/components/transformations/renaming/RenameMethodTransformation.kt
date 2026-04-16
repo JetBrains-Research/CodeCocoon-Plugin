@@ -51,6 +51,7 @@ class RenameMethodTransformation(
             val generateWhenNotInMemory = config.requireOrDefault<Boolean>("generateWhenNotInMemory", defaultValue = false)
             // list of allowed method annotations, e.g. ["NotNull"]
             val whitelistedAnnotations = config.requireOrDefault<List<String>>("whitelistedAnnotations", defaultValue = emptyList())
+            val searchInComments = config.requireOrDefault<Boolean>("searchInComments", defaultValue = false)
 
             val document = IntelliJAwareTransformation.withReadAction { psiFile.document() }
             val modifiedFiles = mutableSetOf<PsiFile>()
@@ -115,7 +116,7 @@ class RenameMethodTransformation(
 
                         // Attempt to rename all methods in the family to the same name
                         val allSucceeded = family.methods.all { method ->
-                            val files = tryRenameMethodAndUsages(psiFile.project, method, suggestion)
+                            val files = tryRenameMethodAndUsages(psiFile.project, method, suggestion, searchInComments)
                             if (files != null) {
                                 modifiedFiles.addAll(files)
 
@@ -337,7 +338,10 @@ class RenameMethodTransformation(
     }
 
     private fun tryRenameMethodAndUsages(
-        project: Project, method: PsiMethod, newName: String
+        project: Project,
+        method: PsiMethod,
+        newName: String,
+        searchInComments: Boolean,
     ): MutableSet<PsiFile>? {
         return try {
             val oldName = method.name
@@ -346,7 +350,7 @@ class RenameMethodTransformation(
                     /* project = */ project,
                     /* element = */ method,
                     /* newName = */ newName,
-                    /* isSearchInComments= */ true,
+                    /* isSearchInComments= */ searchInComments,
                     /* isSearchTextOccurrences = */ false
                 )
             }
