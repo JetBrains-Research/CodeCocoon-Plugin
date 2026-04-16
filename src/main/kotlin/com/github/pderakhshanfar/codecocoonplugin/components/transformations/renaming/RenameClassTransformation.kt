@@ -30,7 +30,8 @@ import kotlinx.serialization.Serializable
 /**
  * Renames Java classes to an LLM-suggested, semantically similar name and updates usages/overrides.
  *
- * Skips: classes referenced from non-Java files, test class names and annotated classes.
+ * Skips: classes referenced from non-Java files, test class names
+ * and annotated classes (if the annotation is not whitelisted; `whitelistedAnnotations` array as YAML param).
  */
 class RenameClassTransformation(
     override val config: Map<String, Any>
