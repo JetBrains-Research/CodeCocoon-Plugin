@@ -49,6 +49,7 @@ class RenameClassTransformation(
             val useMemory = config.requireOrDefault<Boolean>("useMemory", defaultValue = false)
             val generateWhenNotInMemory = config.requireOrDefault<Boolean>("generateWhenNotInMemory", defaultValue = false)
             val whitelistedAnnotations = config.requireOrDefault<List<String>>("whitelistedAnnotations", defaultValue = emptyList())
+            val searchInComments = config.requireOrDefault<Boolean>("searchInComments", defaultValue = false)
 
             val document = withReadAction { psiFile.document() }
             val modifiedFiles = mutableSetOf<PsiFile>()
@@ -92,7 +93,7 @@ class RenameClassTransformation(
 
                     // Try each suggestion until one succeeds
                     for (suggestion in suggestions) {
-                        val files = tryRenameClassAndUsages(psiFile.project, psiClass, suggestion)
+                        val files = tryRenameClassAndUsages(psiFile.project, psiClass, suggestion, searchInComments)
                         if (files != null) {
                             modifiedFiles.addAll(files)
                             if (saveRenamesInMemory) {
@@ -253,7 +254,10 @@ class RenameClassTransformation(
     }
 
     private fun tryRenameClassAndUsages(
-        project: Project, psiClass: PsiClass, newName: String
+        project: Project,
+        psiClass: PsiClass,
+        newName: String,
+        searchInComments: Boolean,
     ): MutableSet<PsiFile>? {
         return try {
             val oldName = psiClass.name ?: return null
@@ -263,7 +267,7 @@ class RenameClassTransformation(
                     /* project = */ project,
                     /* element = */ psiClass,
                     /* newName = */ newName,
-                    /* isSearchInComments= */ true,
+                    /* isSearchInComments= */ searchInComments,
                     /* isSearchTextOccurrences = */ false
                 )
             }
