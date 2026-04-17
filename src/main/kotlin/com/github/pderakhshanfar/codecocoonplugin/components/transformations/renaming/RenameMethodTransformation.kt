@@ -56,23 +56,20 @@ class RenameMethodTransformation(
             val document = IntelliJAwareTransformation.withReadAction { psiFile.document() }
             val modifiedFiles = mutableSetOf<PsiFile>()
             val value = if (document != null) {
-                val publicMethods: List<PsiMethod> = IntelliJAwareTransformation.withReadAction {
-                    findAllValidMethods(
+                // Find all valid method families (already grouped and filtered)
+                val overloadFamilies: List<OverloadFamily> = IntelliJAwareTransformation.withReadAction {
+                    findAllValidMethodFamilies(
                         psiFile = psiFile,
                         whitelistedMethodAnnotations = whitelistedAnnotations
                     )
                 }
 
-                if (publicMethods.isEmpty()) {
-                    return TransformationResult.Skipped("No matching methods found in ${virtualFile.name}")
+                if (overloadFamilies.isEmpty()) {
+                    return TransformationResult.Skipped("No matching method families found in ${virtualFile.name}")
                 }
 
-                // Group methods into overload families to ensure overloaded methods get the same name
-                val overloadFamilies = IntelliJAwareTransformation.withReadAction {
-                    groupMethodsByOverloads(publicMethods)
-                }
-
-                logger.info("  ⏲ Generating rename suggestions for ${publicMethods.size} methods (${overloadFamilies.size} overload families)...")
+                val totalMethods = overloadFamilies.sumOf { it.methods.size }
+                logger.info("  ⏲ Generating rename suggestions for $totalMethods methods (${overloadFamilies.size} overload families)...")
 
                 // Generate suggestions for each overload family (not individual methods)
                 val familySuggestions = runBlocking {
@@ -150,11 +147,10 @@ class RenameMethodTransformation(
                     }
                 }
 
-                val totalCandidates = publicMethods.size
-                val skipped = totalCandidates - renamedMethodCount
+                val skipped = totalMethods - renamedMethodCount
 
                 TransformationResult.Success(
-                    message = "Renamed ${renamedMethodCount}/${totalCandidates} methods in ${virtualFile.name}${if (skipped > 0) " (skipped: $skipped)" else ""}",
+                    message = "Renamed ${renamedMethodCount}/${totalMethods} methods in ${virtualFile.name}${if (skipped > 0) " (skipped: $skipped)" else ""}",
                     filesModified = modifiedFiles.size
                 )
             } else {
@@ -382,20 +378,9 @@ class RenameMethodTransformation(
     }
 
     /**
-     * @param psiFile The PSI file to search for methods
-     * @param whitelistedMethodAnnotations A list of method annotations that are allowed to be present on the method.
+     * Collects all methods from the PSI file without any filtering.
      */
-    private fun findAllValidMethods(
-        psiFile: PsiFile,
-        whitelistedMethodAnnotations: List<String>,
-    ): List<PsiMethod> {
-        // Log whitelisted annotations
-        if (whitelistedMethodAnnotations.isNotEmpty()) {
-            logger.info("  ↳ Whitelisted method annotations: [${whitelistedMethodAnnotations.joinToString(", ")}]")
-        } else {
-            logger.info("  ↳ No method annotations whitelisted (only non-annotated methods allowed)")
-        }
-
+    private fun collectAllMethods(psiFile: PsiFile): List<PsiMethod> {
         val methods = mutableListOf<PsiMethod>()
         psiFile.accept(object : PsiRecursiveElementVisitor() {
             override fun visitElement(element: PsiElement) {
@@ -405,102 +390,172 @@ class RenameMethodTransformation(
                 }
             }
         })
+        return methods
+    }
 
-        val filteredMethods = methods.filter { method ->
-            val psiClass = method.containingClass
-            if (psiClass == null) {
-                logger.info("    ⊘ Method `${method.name}` - skipped (no containing class)")
-                return@filter false
-            }
-
-            val project = method.project
-            val fileIndex = ProjectFileIndex.getInstance(project)
-
-            // If our interface extends a library interface, skip it.
-            if (psiClass.isInterface) {
-                val extendsLibraryInterface = psiClass.supers.any { superInterface ->
-                    superInterface.containingFile?.virtualFile?.let { fileIndex.isInLibrary(it) } == true
-                }
-                if (extendsLibraryInterface) {
-                    logger.info("    ⊘ Method `${method.name}` - skipped (interface extends library interface)")
-                    return@filter false
-                }
-            }
-
-            // Inheritance Guard:
-            // Catch methods that override methods
-            if (method.findSuperMethods().isNotEmpty()) {
-                logger.info("    ⊘ Method `${method.name}` - skipped (overrides super method)")
-                return@filter false
-            }
-
-            // Non-Code Usage Guard
-            val references = ReferencesSearch.search(method).findAll()
-            val usedInNonJavaFile = references.any { ref ->
-                val fileType = ref.element.containingFile.fileType.name
-                fileType != "JAVA" && fileType != "Kotlin"
-            }
-            if (usedInNonJavaFile) {
-                logger.info("    ⊘ Method `${method.name}` - skipped (used in non-Java file)")
-                return@filter false
-            }
-
-            // Public API Guard
-            if (method.hasModifierProperty(PsiModifier.PUBLIC) && references.isEmpty()) {
-                logger.info("    ⊘ Method `${method.name}` - skipped (public API with no references)")
-                return@filter false
-            }
-
-            // Is not a test
-            if (fileIndex.isInTestSourceContent(psiFile.virtualFile)) {
-                logger.info("    ⊘ Method `${method.name}` - skipped (in test source)")
-                return@filter false
-            }
-
-            // Basic Filters
-            // either no method annotations or whitelisted ones only
-            val methodAnnotations = method.annotations.toList()
-            val annotationsFilter = methodAnnotations.isEmpty()
-                    || methodAnnotations.allowedAnnotationsOnly(whitelistedMethodAnnotations)
-
-            // Log annotation filtering for methods with annotations
-            if (methodAnnotations.isNotEmpty()) {
-                val annotationNames = methodAnnotations.mapNotNull { it.qualifiedName?.substringAfterLast('.') }
-                if (annotationsFilter) {
-                    logger.info("    ✓ Method `${method.name}` with annotations [${annotationNames.joinToString(", ")}] - whitelisted")
-                } else {
-                    logger.info("    ⊘ Method `${method.name}` with annotations [${annotationNames.joinToString(", ")}] - skipped (not whitelisted)")
-                    return@filter false
-                }
-            }
-
-            // Constructor check
-            if (method.isConstructor) {
-                logger.info("    ⊘ Method `${method.name}` - skipped (is constructor)")
-                return@filter false
-            }
-
-            // Disallowed method names
-            if (method.name in DISALLOWED_METHOD_NAMES) {
-                logger.info("    ⊘ Method `${method.name}` - skipped (disallowed method name)")
-                return@filter false
-            }
-
-            // Getter/setter/is prefix check
-            if (method.name.startsWith("get") || method.name.startsWith("set") || method.name.startsWith("is")) {
-                logger.info("    ⊘ Method `${method.name}` - skipped (getter/setter/is prefix)")
-                return@filter false
-            }
-
-            true
+    /**
+     * Checks if a single method passes all filtering criteria.
+     * Returns true if the method should be included, false otherwise.
+     */
+    private fun passesMethodFilters(
+        method: PsiMethod,
+        psiFile: PsiFile,
+        whitelistedMethodAnnotations: List<String>
+    ): Boolean {
+        val psiClass = method.containingClass
+        if (psiClass == null) {
+            logger.info("      ⊘ Method `${method.name}` - skipped (no containing class)")
+            return false
         }
 
-        if (filteredMethods.isNotEmpty()) {
-            // prettify filepath attempting to make it relative to the project root
+        val project = method.project
+        val fileIndex = ProjectFileIndex.getInstance(project)
+
+        // If our interface extends a library interface, skip it.
+        // FIX: Filter out java.lang.Object which is implicitly extended by all interfaces
+        if (psiClass.isInterface) {
+            val extendsLibraryInterface = psiClass.supers.any { superInterface ->
+                val qualifiedName = superInterface.qualifiedName
+                // Skip java.lang.Object (implicitly extended by all interfaces)
+                if (qualifiedName == "java.lang.Object") {
+                    return@any false
+                }
+                superInterface.containingFile?.virtualFile?.let { fileIndex.isInLibrary(it) } == true
+            }
+            if (extendsLibraryInterface) {
+                logger.info("      ⊘ Method `${method.name}` - skipped (interface extends library interface)")
+                return false
+            }
+        }
+
+        // Inheritance Guard:
+        // Catch methods that override methods
+        if (method.findSuperMethods().isNotEmpty()) {
+            logger.info("      ⊘ Method `${method.name}` - skipped (overrides super method)")
+            return false
+        }
+
+        // Non-Code Usage Guard
+        val references = ReferencesSearch.search(method).findAll()
+        val usedInNonJavaFile = references.any { ref ->
+            val fileType = ref.element.containingFile.fileType.name
+            fileType != "JAVA" && fileType != "Kotlin"
+        }
+        if (usedInNonJavaFile) {
+            logger.info("      ⊘ Method `${method.name}` - skipped (used in non-Java file)")
+            return false
+        }
+
+        // Public API Guard
+        if (method.hasModifierProperty(PsiModifier.PUBLIC) && references.isEmpty()) {
+            logger.info("      ⊘ Method `${method.name}` - skipped (public API with no references)")
+            return false
+        }
+
+        // Is not a test
+        if (fileIndex.isInTestSourceContent(psiFile.virtualFile)) {
+            logger.info("      ⊘ Method `${method.name}` - skipped (in test source)")
+            return false
+        }
+
+        // Basic Filters
+        // either no method annotations or whitelisted ones only
+        val methodAnnotations = method.annotations.toList()
+        val annotationsFilter = methodAnnotations.isEmpty()
+                || methodAnnotations.allowedAnnotationsOnly(whitelistedMethodAnnotations)
+
+        // Log annotation filtering for methods with annotations
+        if (methodAnnotations.isNotEmpty()) {
+            val annotationNames = methodAnnotations.mapNotNull { it.qualifiedName?.substringAfterLast('.') }
+            if (annotationsFilter) {
+                logger.info("      ✓ Method `${method.name}` with annotations [${annotationNames.joinToString(", ")}] - whitelisted")
+            } else {
+                logger.info("      ⊘ Method `${method.name}` with annotations [${annotationNames.joinToString(", ")}] - skipped (not whitelisted)")
+                return false
+            }
+        }
+
+        // Constructor check
+        if (method.isConstructor) {
+            logger.info("      ⊘ Method `${method.name}` - skipped (is constructor)")
+            return false
+        }
+
+        // Disallowed method names
+        if (method.name in DISALLOWED_METHOD_NAMES) {
+            logger.info("      ⊘ Method `${method.name}` - skipped (disallowed method name)")
+            return false
+        }
+
+        // Getter/setter/is prefix check
+        if (method.name.startsWith("get") || method.name.startsWith("set") || method.name.startsWith("is")) {
+            logger.info("      ⊘ Method `${method.name}` - skipped (getter/setter/is prefix)")
+            return false
+        }
+
+        return true
+    }
+
+    /**
+     * Filters overload families where ALL methods in the family pass the filters.
+     * If any method in a family fails a filter, the entire family is excluded.
+     */
+    private fun filterValidFamilies(
+        families: List<OverloadFamily>,
+        psiFile: PsiFile,
+        whitelistedMethodAnnotations: List<String>
+    ): List<OverloadFamily> {
+        return families.filter { family ->
+            // Check if ALL methods in the family pass filters
+            val allMethodsValid = family.methods.all { method ->
+                passesMethodFilters(method, psiFile, whitelistedMethodAnnotations)
+            }
+
+            if (!allMethodsValid) {
+                logger.info("    ⊘ Overload family `${family.methodName}` (${family.methods.size} methods) - skipped (one or more methods filtered out)")
+            }
+
+            allMethodsValid
+        }
+    }
+
+    /**
+     * Finds all valid method families in the PSI file.
+     * Returns overload families where ALL methods pass filtering criteria.
+     *
+     * @param psiFile The PSI file to search for methods
+     * @param whitelistedMethodAnnotations A list of method annotations that are allowed to be present on the method.
+     * @return List of valid overload families
+     */
+    private fun findAllValidMethodFamilies(
+        psiFile: PsiFile,
+        whitelistedMethodAnnotations: List<String>,
+    ): List<OverloadFamily> {
+        // Log whitelisted annotations
+        if (whitelistedMethodAnnotations.isNotEmpty()) {
+            logger.info("  ↳ Whitelisted method annotations: ${whitelistedMethodAnnotations.joinToString(", ")}")
+        } else {
+            logger.info("  ↳ No method annotations whitelisted (only non-annotated methods allowed)")
+        }
+
+        // Step 1: Collect all methods without filtering
+        val allMethods = collectAllMethods(psiFile)
+
+        // Step 2: Group into overload families
+        val allFamilies = groupMethodsByOverloads(allMethods)
+
+        logger.info("  ↳ Found ${allMethods.size} total methods in ${allFamilies.size} overload families")
+
+        // Step 3: Filter families (all methods in family must pass)
+        val validFamilies = filterValidFamilies(allFamilies, psiFile, whitelistedMethodAnnotations)
+
+        if (validFamilies.isNotEmpty()) {
+            val validMethodCount = validFamilies.sumOf { it.methods.size }
             val filepath = psiFile.virtualFile?.let { psiFile.project.relativeToRootOrAbsPath(it) } ?: "<in-memory>"
-            logger.info("  ↳ Found ${filteredMethods.size} matching methods in '$filepath'")
+            logger.info("  ↳ After filtering: ${validFamilies.size} valid families with $validMethodCount methods in '$filepath'")
         }
-        return filteredMethods
+
+        return validFamilies
     }
 
     companion object {
