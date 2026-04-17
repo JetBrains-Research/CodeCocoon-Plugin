@@ -194,12 +194,15 @@ class RenameMethodTransformation(
     /**
      * Groups methods into overload families.
      * Methods with the same name in the same containing class are grouped together.
+     * Static and instance methods are kept in separate families even if they share the same name.
      */
     private fun groupMethodsByOverloads(methods: List<PsiMethod>): List<OverloadFamily> {
         val grouped = methods.groupBy { method ->
-            val className = method.containingClass?.qualifiedName ?: ""
-            val methodName = method.name
-            "$className.$methodName"
+            Triple(
+                method.containingClass?.qualifiedName ?: "",
+                method.name,
+                method.hasModifierProperty(PsiModifier.STATIC)
+            )
         }
 
         return grouped.map { (_, methodsInFamily) ->
@@ -428,12 +431,8 @@ class RenameMethodTransformation(
             }
         }
 
-        // Inheritance Guard:
-        // Catch methods that override methods
-        if (method.findSuperMethods().isNotEmpty()) {
-            logger.info("      ⊘ Method `${method.name}` - skipped (overrides super method in [${method.findSuperMethods().joinToString { it.name }}])")
-            return false
-        }
+        // Note: Override check is now handled in findAllValidMethodFamilies() BEFORE grouping
+        // This prevents override methods from contaminating overload families with static methods
 
         // Non-Code Usage Guard
         val references = ReferencesSearch.search(method).findAll()
@@ -535,12 +534,26 @@ class RenameMethodTransformation(
         // Step 1: Collect all methods without filtering
         val allMethods = collectAllMethods(psiFile)
 
-        // Step 2: Group into overload families
-        val allFamilies = groupMethodsByOverloads(allMethods)
+        // Step 2: Filter out override methods BEFORE grouping
+        // Override methods must keep their original names to maintain inheritance contracts
+        val nonOverrideMethods = allMethods.filter { method ->
+            val superMethods = method.findSuperMethods()
+            if (superMethods.isNotEmpty()) {
+                logger.info("    ⊘ Method `${method.name}` - skipped (overrides super method from ${superMethods.firstOrNull()?.containingClass?.qualifiedName})")
+                false
+            } else {
+                true
+            }
+        }
 
-        logger.info("  ↳ Found ${allMethods.size} total methods in ${allFamilies.size} overload families")
+        logger.info("  ↳ Found ${allMethods.size} total methods, ${nonOverrideMethods.size} non-override methods")
 
-        // Step 3: Filter families (all methods in family must pass)
+        // Step 3: Group into overload families (now without overrides)
+        val allFamilies = groupMethodsByOverloads(nonOverrideMethods)
+
+        logger.info("  ↳ Grouped into ${allFamilies.size} overload families (static/instance separate)")
+
+        // Step 4: Filter families (all methods in family must pass remaining filters)
         val validFamilies = filterValidFamilies(allFamilies, psiFile, whitelistedMethodAnnotations)
 
         if (validFamilies.isNotEmpty()) {
