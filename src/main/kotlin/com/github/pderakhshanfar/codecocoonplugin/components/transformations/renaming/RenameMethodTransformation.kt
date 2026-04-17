@@ -407,7 +407,12 @@ class RenameMethodTransformation(
         })
 
         val filteredMethods = methods.filter { method ->
-            val psiClass = method.containingClass ?: return@filter false
+            val psiClass = method.containingClass
+            if (psiClass == null) {
+                logger.info("    ⊘ Method `${method.name}` - skipped (no containing class)")
+                return@filter false
+            }
+
             val project = method.project
             val fileIndex = ProjectFileIndex.getInstance(project)
 
@@ -416,12 +421,18 @@ class RenameMethodTransformation(
                 val extendsLibraryInterface = psiClass.supers.any { superInterface ->
                     superInterface.containingFile?.virtualFile?.let { fileIndex.isInLibrary(it) } == true
                 }
-                if (extendsLibraryInterface) return@filter false
+                if (extendsLibraryInterface) {
+                    logger.info("    ⊘ Method `${method.name}` - skipped (interface extends library interface)")
+                    return@filter false
+                }
             }
 
             // Inheritance Guard:
             // Catch methods that override methods
-            if (method.findSuperMethods().isNotEmpty()) return@filter false
+            if (method.findSuperMethods().isNotEmpty()) {
+                logger.info("    ⊘ Method `${method.name}` - skipped (overrides super method)")
+                return@filter false
+            }
 
             // Non-Code Usage Guard
             val references = ReferencesSearch.search(method).findAll()
@@ -429,15 +440,22 @@ class RenameMethodTransformation(
                 val fileType = ref.element.containingFile.fileType.name
                 fileType != "JAVA" && fileType != "Kotlin"
             }
-            if (usedInNonJavaFile) return@filter false
+            if (usedInNonJavaFile) {
+                logger.info("    ⊘ Method `${method.name}` - skipped (used in non-Java file)")
+                return@filter false
+            }
 
             // Public API Guard
             if (method.hasModifierProperty(PsiModifier.PUBLIC) && references.isEmpty()) {
+                logger.info("    ⊘ Method `${method.name}` - skipped (public API with no references)")
                 return@filter false
             }
 
             // Is not a test
-            if (fileIndex.isInTestSourceContent(psiFile.virtualFile)) return@filter false
+            if (fileIndex.isInTestSourceContent(psiFile.virtualFile)) {
+                logger.info("    ⊘ Method `${method.name}` - skipped (in test source)")
+                return@filter false
+            }
 
             // Basic Filters
             // either no method annotations or whitelisted ones only
@@ -452,15 +470,29 @@ class RenameMethodTransformation(
                     logger.info("    ✓ Method `${method.name}` with annotations [${annotationNames.joinToString(", ")}] - whitelisted")
                 } else {
                     logger.info("    ⊘ Method `${method.name}` with annotations [${annotationNames.joinToString(", ")}] - skipped (not whitelisted)")
+                    return@filter false
                 }
             }
 
-            annotationsFilter &&
-                    !method.isConstructor &&
-                    method.name !in DISALLOWED_METHOD_NAMES &&
-                    !method.name.startsWith("get") &&
-                    !method.name.startsWith("set") &&
-                    !method.name.startsWith("is")
+            // Constructor check
+            if (method.isConstructor) {
+                logger.info("    ⊘ Method `${method.name}` - skipped (is constructor)")
+                return@filter false
+            }
+
+            // Disallowed method names
+            if (method.name in DISALLOWED_METHOD_NAMES) {
+                logger.info("    ⊘ Method `${method.name}` - skipped (disallowed method name)")
+                return@filter false
+            }
+
+            // Getter/setter/is prefix check
+            if (method.name.startsWith("get") || method.name.startsWith("set") || method.name.startsWith("is")) {
+                logger.info("    ⊘ Method `${method.name}` - skipped (getter/setter/is prefix)")
+                return@filter false
+            }
+
+            true
         }
 
         if (filteredMethods.isNotEmpty()) {
