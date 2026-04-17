@@ -431,7 +431,7 @@ class RenameMethodTransformation(
         // Inheritance Guard:
         // Catch methods that override methods
         if (method.findSuperMethods().isNotEmpty()) {
-            logger.info("      ⊘ Method `${method.name}` - skipped (overrides super method)")
+            logger.info("      ⊘ Method `${method.name}` - skipped (overrides super method in [${method.findSuperMethods().joinToString { it.name }}])")
             return false
         }
 
