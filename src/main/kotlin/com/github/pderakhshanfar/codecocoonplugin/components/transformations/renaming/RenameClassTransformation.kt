@@ -52,7 +52,21 @@ class RenameClassTransformation(
 
             // Annotation filtering configuration
             val whitelistedAnnotations = config.requireOrDefault<List<String>>("whitelistedAnnotations", defaultValue = emptyList())
-            val blacklistedAnnotations = config.requireOrDefault<List<String>>("blacklistedAnnotations", defaultValue = emptyList())
+            val blacklistedAnnotationsRaw = config.requireOrDefault<List<String>>("blacklistedAnnotations", defaultValue = emptyList())
+
+            // Process blacklist: merge defaults if "_default" or "default" is present
+            val blacklistedAnnotations = if (blacklistedAnnotationsRaw.any { it.equals("_default", ignoreCase = true) || it.equals("default", ignoreCase = true) }) {
+                logger.info("  ↳ Include default blacklisted annotations ALONG with the custom ones (i.e., '_default' or 'default' keyword in the list)")
+
+                val customAnnotations = blacklistedAnnotationsRaw.filter { !it.equals("_default", ignoreCase = true) && !it.equals("default", ignoreCase = true) }
+                (DEFAULT_BLACKLISTED_CLASS_ANNOTATIONS + customAnnotations).toList()
+            } else {
+                // Warn if using blacklist mode without defaults
+                if (blacklistedAnnotationsRaw.isNotEmpty()) {
+                    logger.warn("  ⚠ Blacklist provided without '_default' keyword - framework annotations will NOT be automatically excluded")
+                }
+                blacklistedAnnotationsRaw
+            }
 
             // Auto-detect mode: if whitelistedAnnotations is provided, use whitelist mode; otherwise blacklist
             val annotationFilterMode = config.requireOrDefault<String>(
@@ -332,7 +346,7 @@ class RenameClassTransformation(
             "blacklist" -> {
                 logger.info("  ↳ Annotation filter mode: BLACKLIST")
                 if (blacklistedClassAnnotations.isNotEmpty()) {
-                    logger.info("  ↳ Blacklisted class annotations: [${blacklistedClassAnnotations.joinToString(", ")}]")
+                    logger.info("  ↳ Blacklisted class annotations: [\n${blacklistedClassAnnotations.joinToString(",\n") { "\t$it" } }\n]")
                 } else {
                     logger.info("  ↳ Blacklisted class annotations: [] (all annotations allowed)")
                 }
