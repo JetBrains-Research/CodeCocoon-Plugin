@@ -20,23 +20,34 @@ CodeCocoon is an IntelliJ Platform plugin for **metamorphic testing** of Java pr
    - Self-managed: `SelfManagedTransformation` (uses refactoring processors)
 
 3. **Built-in transformations**:
-   - `rename-method-transformation` - Rename methods via LLM suggestions
-   - `rename-class-transformation` - Rename classes
-   - `rename-variable-transformation` - Rename fields/parameters/locals
+   - `rename-method-transformation` - Rename methods via LLM suggestions (supports annotation whitelist/blacklist)
+   - `rename-class-transformation` - Rename classes via LLM suggestions (supports annotation whitelist/blacklist)
+   - `rename-variable-transformation` - Rename fields/parameters/locals via LLM suggestions
    - `move-file-into-suggested-directory-transformation/ai` - Move files (LLM suggests destination)
    - `move-file-into-suggested-directory-transformation/config` - Move files (config specifies destination)
+   - `add-comment-transformation` - Example transformation (adds comment to file start)
 
 4. **LLM Integration**: Uses Grazie/Koog to generate semantically similar names
 
-5. **Memory System**: Caches LLM suggestions in `.codecocoon-memory/` to avoid redundant API calls
+5. **Memory System**:
+   - Persistent cache storing LLM suggestions in `.codecocoon-memory/<project-name>.json`
+   - Signature-based: Each element (class/method/variable/file) gets unique signature
+   - Controlled via `useMemory` and `generateWhenNotInMemory` config options
+   - Auto-saves on transformation completion via `PersistentMemory.use {}`
 
-6. **Configuration**: `codecocoon.yml` in project root defines transformations and target files
+6. **Annotation Filtering** (methods/classes only):
+   - **Whitelist mode**: Only rename elements WITH specified annotations
+   - **Blacklist mode** (recommended): Rename all EXCEPT those with specified annotations
+   - **`"_default"` keyword**: Merges 40+ framework annotations (Spring, JPA, JAX-RS, JUnit, etc.) with custom ones
+   - Warning logged if blacklist used without `"_default"`
 
-7. **Important Threading Rules**:
+7. **Configuration**: `codecocoon.yml` in project root defines transformations and target files
+
+8. **Important Threading Rules**:
    - PSI reads require `readAction { }` or `IntelliJAwareTransformation.withReadAction { }`
    - PSI writes require `writeCommandAction { }` or use self-managed refactoring processors
 
-8. **Import Optimization Prevention**: Code style settings configured to prevent wildcard imports and minimize automatic import modifications
+9. **Import Optimization Prevention**: Code style settings configured to prevent wildcard imports and minimize automatic import modifications
    - ✅ Prevents wildcard imports (`import package.*`)
    - ✅ Forces single class imports
    - ❌ Cannot prevent unused import removal (IntelliJ limitation)
@@ -56,6 +67,8 @@ Refer to [`CLAUDE.md`](./CLAUDE.md) for:
 - PSI utilities and helper functions
 - Configuration schema and examples
 - Transformation implementation details
+- Memory system internals (`PsiSignatureGenerator`, signature format)
+- Annotation filtering implementation (whitelist/blacklist logic)
 - Error handling patterns
 - File structure overview
 - Dependencies and testing
