@@ -553,6 +553,37 @@ class RenameMethodTransformation(
 
         logger.info("  ↳ Grouped into ${allFamilies.size} overload families (static/instance separate)")
 
+        // Print family details
+        if (allFamilies.isNotEmpty()) {
+            logger.info("  ↳ Overload families found:")
+            for (family in allFamilies) {
+                val className = family.containingClass.qualifiedName ?: family.containingClass.name ?: "<anonymous>"
+                val isStatic = family.methods.firstOrNull()?.hasModifierProperty(PsiModifier.STATIC)
+                val modifier = when (isStatic) {
+                    null -> "unknown"
+                    true -> "static"
+                    else -> "instance"
+                }
+                logger.info("    • $className.${family.methodName} [$modifier, ${family.methods.size} overload(s)]:")
+
+                val signatures = IntelliJAwareTransformation.withReadAction {
+                    family.methods.mapNotNull { method ->
+                        PsiSignatureGenerator.generateSignature(method)
+                    }
+                }
+
+                val displayLimit = 10
+                signatures.take(displayLimit).forEach { signature ->
+                    logger.info("        $signature")
+                }
+
+                if (signatures.size > displayLimit) {
+                    val remaining = signatures.size - displayLimit
+                    logger.info("        ... ($remaining more, ${signatures.size} total)")
+                }
+            }
+        }
+
         // Step 4: Filter families (all methods in family must pass remaining filters)
         val validFamilies = filterValidFamilies(allFamilies, psiFile, whitelistedMethodAnnotations)
 
