@@ -389,6 +389,13 @@ class RenameMethodTransformation(
         psiFile: PsiFile,
         whitelistedMethodAnnotations: List<String>,
     ): List<PsiMethod> {
+        // Log whitelisted annotations
+        if (whitelistedMethodAnnotations.isNotEmpty()) {
+            logger.info("  ↳ Whitelisted method annotations: [${whitelistedMethodAnnotations.joinToString(", ")}]")
+        } else {
+            logger.info("  ↳ No method annotations whitelisted (only non-annotated methods allowed)")
+        }
+
         val methods = mutableListOf<PsiMethod>()
         psiFile.accept(object : PsiRecursiveElementVisitor() {
             override fun visitElement(element: PsiElement) {
@@ -434,8 +441,19 @@ class RenameMethodTransformation(
 
             // Basic Filters
             // either no method annotations or whitelisted ones only
-            val annotationsFilter = method.annotations.isEmpty()
-                    || method.annotations.toList().allowedAnnotationsOnly(whitelistedMethodAnnotations)
+            val methodAnnotations = method.annotations.toList()
+            val annotationsFilter = methodAnnotations.isEmpty()
+                    || methodAnnotations.allowedAnnotationsOnly(whitelistedMethodAnnotations)
+
+            // Log annotation filtering for methods with annotations
+            if (methodAnnotations.isNotEmpty()) {
+                val annotationNames = methodAnnotations.mapNotNull { it.qualifiedName?.substringAfterLast('.') }
+                if (annotationsFilter) {
+                    logger.info("    ✓ Method `${method.name}` with annotations [${annotationNames.joinToString(", ")}] - whitelisted")
+                } else {
+                    logger.info("    ⊘ Method `${method.name}` with annotations [${annotationNames.joinToString(", ")}] - skipped (not whitelisted)")
+                }
+            }
 
             annotationsFilter &&
                     !method.isConstructor &&
