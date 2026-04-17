@@ -306,6 +306,13 @@ class RenameClassTransformation(
         psiFile: PsiFile,
         whitelistedClassAnnotations: List<String>,
     ): List<PsiClass> {
+        // Log whitelisted annotations
+        if (whitelistedClassAnnotations.isNotEmpty()) {
+            logger.info("  ↳ Whitelisted class annotations: [${whitelistedClassAnnotations.joinToString(", ")}]")
+        } else {
+            logger.info("  ↳ No class annotations whitelisted (only non-annotated classes allowed)")
+        }
+
         val classes = mutableListOf<PsiClass>()
         psiFile.accept(object : PsiRecursiveElementVisitor() {
             override fun visitElement(element: PsiElement) {
@@ -332,8 +339,19 @@ class RenameClassTransformation(
             if (fileIndex.isInTestSourceContent(psiFile.virtualFile)) return@filter false
 
             // either no annotations or whitelisted ones only
-            val annotationsFilter = cls.annotations.isEmpty()
-                    || cls.annotations.toList().allowedAnnotationsOnly(whitelistedClassAnnotations)
+            val classAnnotations = cls.annotations.toList()
+            val annotationsFilter = classAnnotations.isEmpty()
+                    || classAnnotations.allowedAnnotationsOnly(whitelistedClassAnnotations)
+
+            // Log annotation filtering for classes with annotations
+            if (classAnnotations.isNotEmpty()) {
+                val annotationNames = classAnnotations.mapNotNull { it.qualifiedName?.substringAfterLast('.') }
+                if (annotationsFilter) {
+                    logger.info("    ✓ Class `${cls.name}` with annotations [${annotationNames.joinToString(", ")}] - whitelisted")
+                } else {
+                    logger.info("    ⊘ Class `${cls.name}` with annotations [${annotationNames.joinToString(", ")}] - skipped (not whitelisted)")
+                }
+            }
 
             // Basic Filters
             val className = cls.name
