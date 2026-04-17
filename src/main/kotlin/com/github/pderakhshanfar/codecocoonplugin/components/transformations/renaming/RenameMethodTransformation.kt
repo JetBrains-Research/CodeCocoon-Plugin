@@ -49,9 +49,17 @@ class RenameMethodTransformation(
         val result = try {
             val useMemory = config.requireOrDefault<Boolean>("useMemory", defaultValue = false)
             val generateWhenNotInMemory = config.requireOrDefault<Boolean>("generateWhenNotInMemory", defaultValue = false)
-            // list of allowed method annotations, e.g. ["NotNull"]
-            val whitelistedAnnotations = config.requireOrDefault<List<String>>("whitelistedAnnotations", defaultValue = emptyList())
             val searchInComments = config.requireOrDefault<Boolean>("searchInComments", defaultValue = false)
+
+            // Annotation filtering configuration
+            val whitelistedAnnotations = config.requireOrDefault<List<String>>("whitelistedAnnotations", defaultValue = emptyList())
+            val blacklistedAnnotations = config.requireOrDefault<List<String>>("blacklistedAnnotations", defaultValue = emptyList())
+
+            // Auto-detect mode: if whitelistedAnnotations is provided, use whitelist mode; otherwise blacklist
+            val annotationFilterMode = config.requireOrDefault<String>(
+                "annotationFilterMode",
+                defaultValue = if (whitelistedAnnotations.isNotEmpty()) "whitelist" else "blacklist"
+            )
 
             val document = IntelliJAwareTransformation.withReadAction { psiFile.document() }
             val modifiedFiles = mutableSetOf<PsiFile>()
@@ -60,7 +68,9 @@ class RenameMethodTransformation(
                 val overloadFamilies: List<OverloadFamily> = IntelliJAwareTransformation.withReadAction {
                     findAllValidMethodFamilies(
                         psiFile = psiFile,
-                        whitelistedMethodAnnotations = whitelistedAnnotations
+                        annotationFilterMode = annotationFilterMode,
+                        whitelistedMethodAnnotations = whitelistedAnnotations,
+                        blacklistedMethodAnnotations = blacklistedAnnotations
                     )
                 }
 
@@ -393,6 +403,50 @@ class RenameMethodTransformation(
     }
 
     /**
+     * Checks if annotations pass the configured filter mode (whitelist or blacklist).
+     *
+     * @param annotations List of annotations to check
+     * @param filterMode "whitelist" or "blacklist"
+     * @param whitelistedAnnotations Annotations to allow (when mode = whitelist)
+     * @param blacklistedAnnotations Annotations to forbid (when mode = blacklist)
+     * @return true if annotations pass the filter, false otherwise
+     */
+    private fun passesAnnotationFilter(
+        annotations: List<PsiAnnotation>,
+        filterMode: String,
+        whitelistedAnnotations: List<String>,
+        blacklistedAnnotations: List<String>,
+    ): Boolean {
+        if (annotations.isEmpty()) {
+            return true
+        }
+
+        return when (filterMode.lowercase()) {
+            "whitelist" -> {
+                // All annotations must be in the whitelist
+                annotations.all { annotation ->
+                    val qualifiedName = annotation.qualifiedName
+                    val simpleName = qualifiedName?.substringAfterLast('.')
+                    (qualifiedName != null) && (qualifiedName in whitelistedAnnotations || simpleName in whitelistedAnnotations)
+                }
+            }
+            "blacklist" -> {
+                // No annotations can be in the blacklist
+                annotations.none { annotation ->
+                    val qualifiedName = annotation.qualifiedName
+                    val simpleName = qualifiedName?.substringAfterLast('.')
+                    qualifiedName in blacklistedAnnotations || simpleName in blacklistedAnnotations
+                }
+            }
+            else -> {
+                logger.warn("    ⚠ Unknown annotation filter mode: '$filterMode', defaulting to blacklist")
+                // Default to blacklist mode with empty list (allow all)
+                true
+            }
+        }
+    }
+
+    /**
      * Collects all methods from the PSI file without any filtering.
      */
     private fun collectAllMethods(psiFile: PsiFile): List<PsiMethod> {
@@ -415,7 +469,9 @@ class RenameMethodTransformation(
     private fun passesMethodFilters(
         method: PsiMethod,
         psiFile: PsiFile,
-        whitelistedMethodAnnotations: List<String>
+        annotationFilterMode: String,
+        whitelistedMethodAnnotations: List<String>,
+        blacklistedMethodAnnotations: List<String>,
     ): Boolean {
         val psiClass = method.containingClass
         if (psiClass == null) {
@@ -463,19 +519,24 @@ class RenameMethodTransformation(
             return false
         }
 
-        // Basic Filters
-        // either no method annotations or whitelisted ones only
+        // Annotation filter
         val methodAnnotations = method.annotations.toList()
-        val annotationsFilter = methodAnnotations.isEmpty()
-                || methodAnnotations.allowedAnnotationsOnly(whitelistedMethodAnnotations)
+        val annotationsPass = passesAnnotationFilter(
+            methodAnnotations,
+            annotationFilterMode,
+            whitelistedMethodAnnotations,
+            blacklistedMethodAnnotations
+        )
 
         // Log annotation filtering for methods with annotations
         if (methodAnnotations.isNotEmpty()) {
             val annotationNames = methodAnnotations.mapNotNull { it.qualifiedName?.substringAfterLast('.') }
-            if (annotationsFilter) {
-                logger.info("      ✓ Method `${method.name}` with annotations [${annotationNames.joinToString(", ")}] - whitelisted")
+            if (annotationsPass) {
+                val modeText = if (annotationFilterMode == "whitelist") "whitelisted" else "allowed"
+                logger.info("      ✓ Method `${method.name}` with annotations [${annotationNames.joinToString(", ")}] - $modeText")
             } else {
-                logger.info("      ⊘ Method `${method.name}` with annotations [${annotationNames.joinToString(", ")}] - skipped (not whitelisted)")
+                val modeText = if (annotationFilterMode == "whitelist") "not whitelisted" else "blacklisted"
+                logger.info("      ⊘ Method `${method.name}` with annotations [${annotationNames.joinToString(", ")}] - skipped ($modeText)")
                 return false
             }
         }
@@ -508,12 +569,20 @@ class RenameMethodTransformation(
     private fun filterValidFamilies(
         families: List<OverloadFamily>,
         psiFile: PsiFile,
-        whitelistedMethodAnnotations: List<String>
+        annotationFilterMode: String,
+        whitelistedMethodAnnotations: List<String>,
+        blacklistedMethodAnnotations: List<String>
     ): List<OverloadFamily> {
         return families.filter { family ->
             // Check if ALL methods in the family pass filters
             val allMethodsValid = family.methods.all { method ->
-                passesMethodFilters(method, psiFile, whitelistedMethodAnnotations)
+                passesMethodFilters(
+                    method,
+                    psiFile,
+                    annotationFilterMode,
+                    whitelistedMethodAnnotations,
+                    blacklistedMethodAnnotations,
+                )
             }
 
             if (!allMethodsValid) {
@@ -529,18 +598,34 @@ class RenameMethodTransformation(
      * Returns overload families where ALL methods pass filtering criteria.
      *
      * @param psiFile The PSI file to search for methods
-     * @param whitelistedMethodAnnotations A list of method annotations that are allowed to be present on the method.
+     * @param annotationFilterMode "whitelist" or "blacklist"
+     * @param whitelistedMethodAnnotations A list of method annotations that are allowed (whitelist mode)
+     * @param blacklistedMethodAnnotations A list of method annotations that are forbidden (blacklist mode)
      * @return List of valid overload families
      */
     private fun findAllValidMethodFamilies(
         psiFile: PsiFile,
+        annotationFilterMode: String,
         whitelistedMethodAnnotations: List<String>,
+        blacklistedMethodAnnotations: List<String>,
     ): List<OverloadFamily> {
-        // Log whitelisted annotations
-        if (whitelistedMethodAnnotations.isNotEmpty()) {
-            logger.info("  ↳ Whitelisted method annotations: ${whitelistedMethodAnnotations.joinToString(", ")}")
-        } else {
-            logger.info("  ↳ No method annotations whitelisted (only non-annotated methods allowed)")
+        // Log annotation filter configuration
+        logger.info("  ↳ Annotation filter mode: $annotationFilterMode")
+        when (annotationFilterMode.lowercase()) {
+            "whitelist" -> {
+                if (whitelistedMethodAnnotations.isNotEmpty()) {
+                    logger.info("  ↳ Whitelisted method annotations: ${whitelistedMethodAnnotations.joinToString(", ")}")
+                } else {
+                    logger.info("  ↳ Whitelist mode active with empty list (only non-annotated methods allowed)")
+                }
+            }
+            "blacklist" -> {
+                if (blacklistedMethodAnnotations.isNotEmpty()) {
+                    logger.info("  ↳ Blacklisted method annotations: ${blacklistedMethodAnnotations.joinToString(", ")}")
+                } else {
+                    logger.info("  ↳ Blacklist mode active with empty list (all annotations allowed)")
+                }
+            }
         }
 
         // Step 1: Collect all methods without filtering
@@ -612,7 +697,13 @@ class RenameMethodTransformation(
         }
 
         // Step 4: Filter families (all methods in family must pass remaining filters)
-        val validFamilies = filterValidFamilies(allFamilies, psiFile, whitelistedMethodAnnotations)
+        val validFamilies = filterValidFamilies(
+            allFamilies,
+            psiFile,
+            annotationFilterMode,
+            whitelistedMethodAnnotations,
+            blacklistedMethodAnnotations,
+        )
 
         if (validFamilies.isNotEmpty()) {
             val validMethodCount = validFamilies.sumOf { it.methods.size }
@@ -629,6 +720,68 @@ class RenameMethodTransformation(
         private val DISALLOWED_METHOD_NAMES = setOf(
             "equals", "hashCode", "toString", "getClass",
             "clone", "finalize", "wait", "notify", "notifyAll"
+        )
+
+        /**
+         * Default blacklisted method annotations (framework/infrastructure annotations).
+         * These annotations typically indicate methods that are called by frameworks/containers,
+         * so renaming them could break runtime behavior.
+         */
+        val DEFAULT_BLACKLISTED_METHOD_ANNOTATIONS = setOf(
+            // JPA/Hibernate Lifecycle
+            "javax.persistence.PrePersist",
+            "javax.persistence.PostPersist",
+            "javax.persistence.PreUpdate",
+            "javax.persistence.PostUpdate",
+            "javax.persistence.PreRemove",
+            "javax.persistence.PostRemove",
+            "javax.persistence.PostLoad",
+
+            // Spring Framework
+            "org.springframework.web.bind.annotation.RequestMapping",
+            "org.springframework.web.bind.annotation.GetMapping",
+            "org.springframework.web.bind.annotation.PostMapping",
+            "org.springframework.web.bind.annotation.PutMapping",
+            "org.springframework.web.bind.annotation.DeleteMapping",
+            "org.springframework.web.bind.annotation.PatchMapping",
+            "org.springframework.transaction.annotation.Transactional",
+            "org.springframework.scheduling.annotation.Scheduled",
+            "org.springframework.cache.annotation.Cacheable",
+            "org.springframework.cache.annotation.CacheEvict",
+            "org.springframework.context.event.EventListener",
+            "org.springframework.jmx.export.annotation.ManagedOperation",
+
+            // JAX-RS (REST APIs)
+            "javax.ws.rs.GET",
+            "javax.ws.rs.POST",
+            "javax.ws.rs.PUT",
+            "javax.ws.rs.DELETE",
+            "javax.ws.rs.Path",
+            "jakarta.ws.rs.GET",
+            "jakarta.ws.rs.POST",
+            "jakarta.ws.rs.PUT",
+            "jakarta.ws.rs.DELETE",
+            "jakarta.ws.rs.Path",
+
+            // Jackson (JSON)
+            "com.fasterxml.jackson.annotation.JsonGetter",
+            "com.fasterxml.jackson.annotation.JsonSetter",
+            "com.fasterxml.jackson.annotation.JsonProperty",
+            "com.fasterxml.jackson.annotation.JsonCreator",
+
+            // JavaFX/Swing
+            "javafx.fxml.FXML",
+
+            // JUnit/Testing Lifecycle
+            "org.junit.jupiter.api.BeforeEach",
+            "org.junit.jupiter.api.AfterEach",
+            "org.junit.jupiter.api.BeforeAll",
+            "org.junit.jupiter.api.AfterAll",
+            "org.junit.Test",
+            "org.junit.Before",
+            "org.junit.After",
+            "org.junit.BeforeClass",
+            "org.junit.AfterClass"
         )
 
         private const val DEFAULT_SUGGESTED_NAMES_SIZE = 5
