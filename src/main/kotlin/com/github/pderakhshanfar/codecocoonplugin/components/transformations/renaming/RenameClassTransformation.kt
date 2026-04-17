@@ -333,10 +333,16 @@ class RenameClassTransformation(
                 val fileType = ref.element.containingFile.fileType.name
                 fileType != "JAVA" && fileType != "Kotlin"
             }
-            if (usedInNonJavaFile) return@filter false
+            if (usedInNonJavaFile) {
+                logger.info("    ⊘ Class `${cls.name}` - skipped (used in non-Java file)")
+                return@filter false
+            }
 
             // Is not a test
-            if (fileIndex.isInTestSourceContent(psiFile.virtualFile)) return@filter false
+            if (fileIndex.isInTestSourceContent(psiFile.virtualFile)) {
+                logger.info("    ⊘ Class `${cls.name}` - skipped (in test source)")
+                return@filter false
+            }
 
             // either no annotations or whitelisted ones only
             val classAnnotations = cls.annotations.toList()
@@ -350,13 +356,26 @@ class RenameClassTransformation(
                     logger.info("    ✓ Class `${cls.name}` with annotations [${annotationNames.joinToString(", ")}] - whitelisted")
                 } else {
                     logger.info("    ⊘ Class `${cls.name}` with annotations [${annotationNames.joinToString(", ")}] - skipped (not whitelisted)")
+                    return@filter false
                 }
             }
 
             // Basic Filters
             val className = cls.name
+
+            // Check for null class name
+            if (className == null) {
+                logger.info("    ⊘ Class <anonymous> - skipped (null class name)")
+                return@filter false
+            }
+
             // We need to check for `cls.name.length` > 1 to filter out raw Type classes
-            (className != null) && (className.length > 1) && annotationsFilter
+            if (className.length <= 1) {
+                logger.info("    ⊘ Class `$className` - skipped (class name too short)")
+                return@filter false
+            }
+
+            true
         }
 
         if (filteredClasses.isNotEmpty()) {
