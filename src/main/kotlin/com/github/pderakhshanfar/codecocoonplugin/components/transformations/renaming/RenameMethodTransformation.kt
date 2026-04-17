@@ -87,63 +87,75 @@ class RenameMethodTransformation(
                 // Track successful renames across all families
                 var renamedMethodCount = 0
 
-                // Try renaming each overload family
-                for (family in overloadFamilies) {
-                    val suggestions = familySuggestions[family] ?: continue
-                    val familyName = IntelliJAwareTransformation.withReadAction { family.methodName }
-
-                    // Generate signatures BEFORE renaming for all methods in the family
-                    val methodSignatures = if (saveRenamesInMemory) {
-                        family.methods.associateWith { method ->
-                            IntelliJAwareTransformation.withReadAction {
-                                PsiSignatureGenerator.generateSignature(method)
-                            }
-                        }
-                    } else {
-                        emptyMap()
+                // Group families by class for organized logging
+                val familiesByClass = overloadFamilies.groupBy {
+                    IntelliJAwareTransformation.withReadAction {
+                        it.containingClass.qualifiedName ?: it.containingClass.name ?: "<anonymous>"
                     }
+                }
 
-                    // Try each suggestion until one succeeds for ALL methods in the family
-                    var familyRenamed = false
-                    for (suggestion in suggestions) {
-                        // Skip if suggestion is the same as the original name (no-op rename)
-                        if (suggestion == familyName) {
-                            continue
-                        }
+                logger.info("  ↳ Renaming methods in ${familiesByClass.size} class(es)...")
 
-                        // Attempt to rename all methods in the family to the same name
-                        val allSucceeded = family.methods.all { method ->
-                            val files = tryRenameMethodAndUsages(psiFile.project, method, suggestion, searchInComments)
-                            if (files != null) {
-                                modifiedFiles.addAll(files)
+                // Try renaming each overload family, grouped by class
+                for ((className, classFamilies) in familiesByClass) {
+                    logger.info("    ◆ Processing class: `$className` (${classFamilies.size} overload families):")
 
-                                // Store in memory if needed (using pre-generated signature)
-                                if (saveRenamesInMemory) {
-                                    val signature = methodSignatures[method]
-                                    if (signature != null) {
-                                        memory?.put(signature, suggestion)
-                                        logger.info("      ✓ Stored rename in memory: `$signature` -> `$suggestion`")
-                                    } else {
-                                        logger.warn("      ⊘ Could not generate signature for method before renaming")
-                                    }
+                    for ((familyIndex, family) in classFamilies.withIndex()) {
+                        val suggestions = familySuggestions[family] ?: continue
+                        val familyName = IntelliJAwareTransformation.withReadAction { family.methodName }
+
+                        // Generate signatures BEFORE renaming for all methods in the family
+                        val methodSignatures = if (saveRenamesInMemory) {
+                            family.methods.associateWith { method ->
+                                IntelliJAwareTransformation.withReadAction {
+                                    PsiSignatureGenerator.generateSignature(method)
                                 }
-                                true
-                            } else {
-                                false
+                            }
+                        } else {
+                            emptyMap()
+                        }
+
+                        // Try each suggestion until one succeeds for ALL methods in the family
+                        var familyRenamed = false
+                        for (suggestion in suggestions) {
+                            // Skip if suggestion is the same as the original name (no-op rename)
+                            if (suggestion == familyName) {
+                                continue
+                            }
+
+                            // Attempt to rename all methods in the family to the same name
+                            logger.info("       • ${familyIndex + 1}) Renaming `$familyName` overload family to `$suggestion` (${family.methods.size} overloads):")
+                            val allSucceeded = family.methods.all { method ->
+                                val files = tryRenameMethodAndUsages(psiFile.project, method, suggestion, searchInComments)
+                                if (files != null) {
+                                    modifiedFiles.addAll(files)
+
+                                    // Store in memory if needed (using pre-generated signature)
+                                    if (saveRenamesInMemory) {
+                                        val signature = methodSignatures[method]
+                                        if (signature != null) {
+                                            memory?.put(signature, suggestion)
+                                            logger.info("          ✓ Stored rename in memory: `$signature` -> `$suggestion`")
+                                        } else {
+                                            logger.warn("          ⊘ Could not generate signature for method before renaming")
+                                        }
+                                    }
+                                    true
+                                } else {
+                                    false
+                                }
+                            }
+
+                            if (allSucceeded) {
+                                renamedMethodCount += family.methods.size
+                                familyRenamed = true
+                                break
                             }
                         }
 
-                        if (allSucceeded) {
-                            renamedMethodCount += family.methods.size
-                            val methodCountInfo = if (family.methods.size > 1) " (${family.methods.size} overloads)" else ""
-                            logger.info("    • Renamed `$familyName` to `$suggestion`$methodCountInfo")
-                            familyRenamed = true
-                            break
+                        if (!familyRenamed) {
+                            logger.info("      ⊘ Skipped renaming method `$familyName`, suggestions: $suggestions")
                         }
-                    }
-
-                    if (!familyRenamed) {
-                        logger.info("  ⊘ Skipped renaming method $familyName, suggestions: $suggestions")
                     }
                 }
 
@@ -367,7 +379,7 @@ class RenameMethodTransformation(
                 method.containingFile?.let { files.add(it) }
                 files
             }
-            logger.info("    • Renamed `$oldName` to `$newName` in ${modifiedFiles.size} files")
+            logger.info("          • Renamed `$oldName` to `$newName` in ${modifiedFiles.size} files")
             modifiedFiles
         } catch (e: ProcessCanceledException) {
             // Must rethrow control flow exceptions
@@ -375,7 +387,7 @@ class RenameMethodTransformation(
             throw e
         } catch (e: Exception) {
             // Rename failed (conflicts, PSI errors, etc.) - return null to try the next suggestion
-            logger.info("    • Skipped ${method.name}:\n      (Reason: ${e.message})")
+            logger.info("          ⊘ Skipped ${method.name}:\n      (Reason: ${e.message})")
             null
         }
     }
@@ -539,7 +551,10 @@ class RenameMethodTransformation(
         val nonOverrideMethods = allMethods.filter { method ->
             val superMethods = method.findSuperMethods()
             if (superMethods.isNotEmpty()) {
-                logger.info("    ⊘ Method `${method.name}` - skipped (overrides super method from ${superMethods.firstOrNull()?.containingClass?.qualifiedName})")
+                val signature = IntelliJAwareTransformation.withReadAction {
+                    PsiSignatureGenerator.generateSignature(method)
+                }
+                logger.info("    ⊘ Method `${method.name}` ($signature) - skipped (overrides super method from `${superMethods.firstOrNull()?.containingClass?.qualifiedName}`)")
                 false
             } else {
                 true
@@ -551,35 +566,47 @@ class RenameMethodTransformation(
         // Step 3: Group into overload families (now without overrides)
         val allFamilies = groupMethodsByOverloads(nonOverrideMethods)
 
-        logger.info("  ↳ Grouped into ${allFamilies.size} overload families (static/instance separate)")
+        // Analyze classes involved
+        val uniqueClasses = allFamilies.map { it.containingClass }.distinctBy { it.qualifiedName }
+        val classCount = uniqueClasses.size
 
-        // Print family details
+        logger.info("  ↳ Grouped into ${allFamilies.size} overload families from $classCount class(es) (static/instance separate)")
+
+        // Print family details grouped by class
         if (allFamilies.isNotEmpty()) {
-            logger.info("  ↳ Overload families found:")
-            for (family in allFamilies) {
-                val className = family.containingClass.qualifiedName ?: family.containingClass.name ?: "<anonymous>"
-                val isStatic = family.methods.firstOrNull()?.hasModifierProperty(PsiModifier.STATIC)
-                val modifier = when (isStatic) {
-                    null -> "unknown"
-                    true -> "static"
-                    else -> "instance"
-                }
-                logger.info("    • $className.${family.methodName} [$modifier, ${family.methods.size} overload(s)]:")
+            logger.info("  ↳ Overload families by class:")
 
-                val signatures = IntelliJAwareTransformation.withReadAction {
-                    family.methods.mapNotNull { method ->
-                        PsiSignatureGenerator.generateSignature(method)
+            // Group families by containing class
+            val familiesByClass = allFamilies.groupBy { it.containingClass.qualifiedName ?: it.containingClass.name ?: "<anonymous>" }
+
+            for ((className, families) in familiesByClass) {
+                val totalMethods = families.sumOf { it.methods.size }
+                logger.info("    ◆ Class: $className (${families.size} families, $totalMethods methods)")
+
+                for (family in families) {
+                    val isStatic = family.methods.firstOrNull()?.hasModifierProperty(PsiModifier.STATIC)
+                    val modifier = when (isStatic) {
+                        null -> "unknown"
+                        true -> "static"
+                        else -> "instance"
                     }
-                }
+                    logger.info("      • ${family.methodName} [$modifier, ${family.methods.size} overload(s)]:")
 
-                val displayLimit = 10
-                signatures.take(displayLimit).forEach { signature ->
-                    logger.info("        $signature")
-                }
+                    val signatures = IntelliJAwareTransformation.withReadAction {
+                        family.methods.mapNotNull { method ->
+                            PsiSignatureGenerator.generateSignature(method)
+                        }
+                    }
 
-                if (signatures.size > displayLimit) {
-                    val remaining = signatures.size - displayLimit
-                    logger.info("        ... ($remaining more, ${signatures.size} total)")
+                    val displayLimit = 10
+                    signatures.take(displayLimit).forEach { signature ->
+                        logger.info("          $signature")
+                    }
+
+                    if (signatures.size > displayLimit) {
+                        val remaining = signatures.size - displayLimit
+                        logger.info("          ... ($remaining more, ${signatures.size} total)")
+                    }
                 }
             }
         }
