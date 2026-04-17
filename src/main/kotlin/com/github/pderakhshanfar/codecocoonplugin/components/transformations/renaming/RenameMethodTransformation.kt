@@ -446,12 +446,6 @@ class RenameMethodTransformation(
             return false
         }
 
-        // Public API Guard
-        if (method.hasModifierProperty(PsiModifier.PUBLIC) && references.isEmpty()) {
-            logger.info("      ⊘ Method `${method.name}` - skipped (public API with no references)")
-            return false
-        }
-
         // Is not a test
         if (fileIndex.isInTestSourceContent(psiFile.virtualFile)) {
             logger.info("      ⊘ Method `${method.name}` - skipped (in test source)")
