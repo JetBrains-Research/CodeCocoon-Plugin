@@ -22,7 +22,7 @@ CodeCocoon is an IntelliJ Platform plugin for **metamorphic testing** of Java pr
 3. **Built-in transformations**:
    - `rename-method-transformation` - Rename methods via LLM suggestions (supports annotation whitelist/blacklist)
    - `rename-class-transformation` - Rename classes via LLM suggestions (supports annotation whitelist/blacklist)
-   - `rename-variable-transformation` - Rename fields/parameters/locals via LLM suggestions
+   - `rename-variable-transformation` - Rename fields/parameters/locals via LLM suggestions (supports annotation blacklist only)
    - `move-file-into-suggested-directory-transformation/ai` - Move files (LLM suggests destination)
    - `move-file-into-suggested-directory-transformation/config` - Move files (config specifies destination)
    - `add-comment-transformation` - Example transformation (adds comment to file start)
@@ -35,10 +35,15 @@ CodeCocoon is an IntelliJ Platform plugin for **metamorphic testing** of Java pr
    - Controlled via `useMemory` and `generateWhenNotInMemory` config options
    - Auto-saves on transformation completion via `PersistentMemory.use {}`
 
-6. **Annotation Filtering** (methods/classes only):
-   - **Whitelist mode**: Only rename elements WITH specified annotations
-   - **Blacklist mode** (recommended): Rename all EXCEPT those with specified annotations
-   - **`"_default"` keyword**: Merges 40+ framework annotations (Spring, JPA, JAX-RS, JUnit, etc.) with custom ones
+6. **Annotation Filtering**:
+   - **Methods/Classes**: Support both whitelist and blacklist modes
+     - **Whitelist mode**: Only rename elements WITH specified annotations
+     - **Blacklist mode** (recommended): Rename all EXCEPT those with specified annotations
+   - **Variables**: Support blacklist mode only (no whitelist)
+   - **`"_default"` keyword**: Merges 35-40+ framework annotations with custom ones
+     - Methods: 40+ annotations (Spring, JPA, JAX-RS, JUnit, etc.)
+     - Classes: 25+ annotations (JPA, Spring, JAX-RS, JAXB, etc.)
+     - Variables: 35+ annotations (JPA, Jackson, JAXB, Spring, validation, CDI, etc.)
    - Warning logged if blacklist used without `"_default"`
 
 7. **Configuration**: `codecocoon.yml` in project root defines transformations and target files
