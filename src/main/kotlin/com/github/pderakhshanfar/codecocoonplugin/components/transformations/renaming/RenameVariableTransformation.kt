@@ -48,10 +48,29 @@ class RenameVariableTransformation(
             val generateWhenNotInMemory = config.requireOrDefault<Boolean>("generateWhenNotInMemory", defaultValue = false)
             val searchInComments = config.requireOrDefault<Boolean>("searchInComments", defaultValue = false)
 
+            // Annotation filtering configuration (blacklist only - no whitelist support)
+            val blacklistedAnnotationsRaw = config.requireOrDefault<List<String>>("blacklistedAnnotations", defaultValue = emptyList())
+
+            // Process blacklist: merge defaults if "_default" or "default" is present
+            val blacklistedAnnotations = if (blacklistedAnnotationsRaw.any { it.equals("_default", ignoreCase = true) || it.equals("default", ignoreCase = true) }) {
+                logger.info("  ↳ Include default blacklisted annotations ALONG with the custom ones (i.e., '_default' or 'default' keyword in the list)")
+
+                val customAnnotations = blacklistedAnnotationsRaw.filter { !it.equals("_default", ignoreCase = true) && !it.equals("default", ignoreCase = true) }
+                (DEFAULT_BLACKLISTED_VARIABLE_ANNOTATIONS + customAnnotations).toList()
+            } else {
+                // Warn if using blacklist mode without defaults
+                if (blacklistedAnnotationsRaw.isNotEmpty()) {
+                    logger.warn("  ⚠ Blacklist provided without '_default' keyword - framework annotations will NOT be automatically excluded")
+                }
+                blacklistedAnnotationsRaw
+            }
+
             val document = withReadAction { psiFile.document() }
             val modifiedFiles = mutableSetOf<PsiFile>()
             val value = if (document != null) {
-                val eligibleVariables: List<PsiVariable> = withReadAction { findAllValidVariables(psiFile) }
+                val eligibleVariables: List<PsiVariable> = withReadAction {
+                    findAllValidVariables(psiFile, blacklistedAnnotations)
+                }
 
                 if (eligibleVariables.isEmpty()) {
                     return TransformationResult.Skipped("No matching variables found in ${virtualFile.name}")
@@ -352,12 +371,37 @@ class RenameVariableTransformation(
     }
 
     /**
+     * Checks if annotations pass the blacklist filter.
+     * Variables renaming supports ONLY blacklist mode (no whitelist).
+     *
+     * @param annotations List of annotations to check
+     * @param blacklistedAnnotations Annotations to forbid (blacklist mode)
+     * @return true if annotations pass the filter (none are blacklisted), false otherwise
+     */
+    private fun passesAnnotationFilter(
+        annotations: List<PsiAnnotation>,
+        blacklistedAnnotations: List<String>,
+    ): Boolean {
+        if (annotations.isEmpty()) {
+            return true
+        }
+
+        // Blacklist mode: No annotations can be in the blacklist
+        return annotations.none { annotation ->
+            val qualifiedName = annotation.qualifiedName
+            val simpleName = qualifiedName?.substringAfterLast('.')
+            qualifiedName in blacklistedAnnotations || simpleName in blacklistedAnnotations
+        }
+    }
+
+    /**
      * Checks if a single variable passes all filtering criteria.
      * Returns true if the variable should be included, false otherwise.
      */
     private fun passesVariableFilters(
         variable: PsiVariable,
         psiFile: PsiFile,
+        blacklistedVariableAnnotations: List<String>,
     ): Boolean {
         val fileIndex = ProjectFileIndex.getInstance(psiFile.project)
 
@@ -373,10 +417,22 @@ class RenameVariableTransformation(
             return false
         }
 
-        // 3. Exclude @Column annotated variables
-        if (variable.annotations.any { it.qualifiedName?.contains("Column") == true }) {
-            logger.info("      ⊘ Variable `${variable.name}` - skipped (has @Column annotation)")
-            return false
+        // 3. Annotation filter (blacklist mode only)
+        val variableAnnotations = variable.annotations.toList()
+        val annotationsPass = passesAnnotationFilter(
+            variableAnnotations,
+            blacklistedVariableAnnotations
+        )
+
+        // Log annotation filtering for variables with annotations
+        if (variableAnnotations.isNotEmpty()) {
+            val annotationNames = variableAnnotations.mapNotNull { it.qualifiedName?.substringAfterLast('.') }
+            if (annotationsPass) {
+                logger.info("      ✓ Variable `${variable.name}` with annotations [${annotationNames.joinToString(", ")}] - allowed (not blacklisted)")
+            } else {
+                logger.info("      ⊘ Variable `${variable.name}` with annotations [${annotationNames.joinToString(", ")}] - skipped (blacklisted)")
+                return false
+            }
         }
 
         // 4. Exclude Library/Compiled Code
@@ -398,13 +454,25 @@ class RenameVariableTransformation(
 
     /**
      * Identifies and filters valid variables from the provided PSI file based on specific criteria.
-     * The filtering logic excludes variables in test sources, enum constants, variables annotated with `@Column`,
+     * The filtering logic excludes variables in test sources, enum constants, blacklisted annotations,
      * variables from library or compiled code, and public/protected fields that could cause external breaking changes.
      *
      * @param psiFile The PSI file to traverse and analyze for variables.
+     * @param blacklistedVariableAnnotations Annotations to exclude (blacklist mode).
      * @return A list of PSI variables matching all filtering criteria.
      */
-    private fun findAllValidVariables(psiFile: PsiFile): List<PsiVariable> {
+    private fun findAllValidVariables(
+        psiFile: PsiFile,
+        blacklistedVariableAnnotations: List<String>,
+    ): List<PsiVariable> {
+        // Log annotation filter configuration
+        if (blacklistedVariableAnnotations.isNotEmpty()) {
+            logger.info("  ↳ Annotation filter mode: BLACKLIST")
+            logger.info("  ↳ Blacklisted variable annotations: [\n${blacklistedVariableAnnotations.joinToString(",\n") { "\t$it" } }\n]")
+        } else {
+            logger.info("  ↳ Annotation filter mode: BLACKLIST (empty - all annotations allowed)")
+        }
+
         val variables = mutableListOf<PsiVariable>()
 
         psiFile.accept(object : PsiRecursiveElementVisitor() {
@@ -417,7 +485,7 @@ class RenameVariableTransformation(
         })
 
         val filteredVariables = variables.filter { v ->
-            passesVariableFilters(v, psiFile)
+            passesVariableFilters(v, psiFile, blacklistedVariableAnnotations)
         }
 
         if (filteredVariables.isNotEmpty()) {
@@ -431,5 +499,75 @@ class RenameVariableTransformation(
     companion object {
         const val ID = "rename-variable-transformation"
         private const val DEFAULT_SUGGESTED_NAMES_SIZE = 3
+
+        /**
+         * Default blacklisted variable annotations (framework/infrastructure annotations).
+         * These annotations typically indicate variables that are mapped to external systems,
+         * so renaming them could break runtime behavior or data binding.
+         */
+        val DEFAULT_BLACKLISTED_VARIABLE_ANNOTATIONS = setOf(
+            // JPA/Hibernate
+            "javax.persistence.Column",
+            "javax.persistence.Id",
+            "javax.persistence.GeneratedValue",
+            "javax.persistence.Version",
+            "javax.persistence.Temporal",
+            "javax.persistence.Enumerated",
+            "javax.persistence.Lob",
+            "javax.persistence.Basic",
+            "javax.persistence.EmbeddedId",
+            "javax.persistence.JoinColumn",
+            "jakarta.persistence.Column",
+            "jakarta.persistence.Id",
+            "jakarta.persistence.GeneratedValue",
+            "jakarta.persistence.Version",
+            "jakarta.persistence.Temporal",
+            "jakarta.persistence.Enumerated",
+            "jakarta.persistence.Lob",
+            "jakarta.persistence.Basic",
+            "jakarta.persistence.EmbeddedId",
+            "jakarta.persistence.JoinColumn",
+
+            // Jackson (JSON)
+            "com.fasterxml.jackson.annotation.JsonProperty",
+            "com.fasterxml.jackson.annotation.JsonIgnore",
+            "com.fasterxml.jackson.annotation.JsonAlias",
+
+            // JAXB (XML)
+            "javax.xml.bind.annotation.XmlElement",
+            "javax.xml.bind.annotation.XmlAttribute",
+            "javax.xml.bind.annotation.XmlTransient",
+            "javax.xml.bind.annotation.XmlID",
+            "jakarta.xml.bind.annotation.XmlElement",
+            "jakarta.xml.bind.annotation.XmlAttribute",
+            "jakarta.xml.bind.annotation.XmlTransient",
+            "jakarta.xml.bind.annotation.XmlID",
+
+            // Spring Framework
+            "org.springframework.beans.factory.annotation.Value",
+            "org.springframework.beans.factory.annotation.Autowired",
+            "org.springframework.beans.factory.annotation.Qualifier",
+            "javax.annotation.Resource",
+
+            // Bean Validation
+            "javax.validation.constraints.NotNull",
+            "javax.validation.constraints.Size",
+            "javax.validation.constraints.Min",
+            "javax.validation.constraints.Max",
+            "javax.validation.constraints.Pattern",
+            "javax.validation.constraints.Email",
+            "jakarta.validation.constraints.NotNull",
+            "jakarta.validation.constraints.Size",
+            "jakarta.validation.constraints.Min",
+            "jakarta.validation.constraints.Max",
+            "jakarta.validation.constraints.Pattern",
+            "jakarta.validation.constraints.Email",
+
+            // CDI
+            "javax.inject.Inject",
+            "javax.inject.Named",
+            "jakarta.inject.Inject",
+            "jakarta.inject.Named"
+        )
     }
 }

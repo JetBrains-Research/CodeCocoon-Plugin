@@ -135,7 +135,7 @@ Renames Java variables (fields, parameters, locals) to LLM-suggested, semantical
 **Filters (variables are skipped if):**
 - In test sources
 - Enum constants
-- Annotated with `@Column`
+- Fail annotation filter (blacklist mode only - no whitelist support)
 - Declared in library/compiled code
 - Public/protected fields (to avoid breaking external consumers)
 
@@ -143,12 +143,21 @@ Renames Java variables (fields, parameters, locals) to LLM-suggested, semantical
 ```yaml
 - id: "rename-variable-transformation"
   config:
+    # Memory configuration
     useMemory: true                    # Optional, default: false
     generateWhenNotInMemory: true      # Optional, default: false
     searchInComments: false            # Optional, default: false
+
+    # Annotation blacklist filtering (no whitelist support)
+    blacklistedAnnotations:
+      - "_default"                     # Special keyword: includes 35+ framework annotations (JPA, Jackson, JAXB, Spring, validation, etc.)
+      - "MyCustomAnnotation"           # Add your own annotations
 ```
 
-**Note:** Variable renaming does NOT support annotation filtering.
+**Annotation filtering (blacklist mode only):**
+- **Blacklist mode**: Rename all variables EXCEPT those with specified annotations. Use `"_default"` to include JPA (`@Column`/`@Id`/`@JoinColumn`), Jackson (`@JsonProperty`), JAXB (`@XmlElement`/`@XmlAttribute`), Spring (`@Value`/`@Autowired`), validation (`@NotNull`/`@Size`/`@Email`), and CDI (`@Inject`) annotations.
+- **⚠ Warning**: Omitting `"_default"` in blacklist will NOT exclude framework annotations automatically.
+- **Note**: Variables do NOT support whitelist mode (methods/classes only).
 
 ---
 
