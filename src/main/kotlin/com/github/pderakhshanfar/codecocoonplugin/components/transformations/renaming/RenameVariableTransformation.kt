@@ -352,6 +352,51 @@ class RenameVariableTransformation(
     }
 
     /**
+     * Checks if a single variable passes all filtering criteria.
+     * Returns true if the variable should be included, false otherwise.
+     */
+    private fun passesVariableFilters(
+        variable: PsiVariable,
+        psiFile: PsiFile,
+    ): Boolean {
+        val fileIndex = ProjectFileIndex.getInstance(psiFile.project)
+
+        // 1. Exclude Test Sources
+        if (fileIndex.isInTestSourceContent(psiFile.virtualFile)) {
+            logger.info("      ⊘ Variable `${variable.name}` - skipped (in test source)")
+            return false
+        }
+
+        // 2. Exclude Enum Constants
+        if (variable is PsiEnumConstant) {
+            logger.info("      ⊘ Variable `${variable.name}` - skipped (is enum constant)")
+            return false
+        }
+
+        // 3. Exclude @Column annotated variables
+        if (variable.annotations.any { it.qualifiedName?.contains("Column") == true }) {
+            logger.info("      ⊘ Variable `${variable.name}` - skipped (has @Column annotation)")
+            return false
+        }
+
+        // 4. Exclude Library/Compiled Code
+        if (variable is PsiCompiledElement || !variable.isPhysical) {
+            logger.info("      ⊘ Variable `${variable.name}` - skipped (compiled or non-physical)")
+            return false
+        }
+
+        // 5. Exclude public/protected fields (could cause external breaking changes)
+        if (variable is PsiField) {
+            if (variable.hasModifierProperty(PsiModifier.PUBLIC) || variable.hasModifierProperty(PsiModifier.PROTECTED)) {
+                logger.info("      ⊘ Variable `${variable.name}` - skipped (public/protected field)")
+                return false
+            }
+        }
+
+        return true
+    }
+
+    /**
      * Identifies and filters valid variables from the provided PSI file based on specific criteria.
      * The filtering logic excludes variables in test sources, enum constants, variables annotated with `@Column`,
      * variables from library or compiled code, and public/protected fields that could cause external breaking changes.
@@ -371,33 +416,8 @@ class RenameVariableTransformation(
             }
         })
 
-        val fileIndex = ProjectFileIndex.getInstance(psiFile.project)
-
         val filteredVariables = variables.filter { v ->
-            // 1. Exclude Test Sources
-            if (fileIndex.isInTestSourceContent(psiFile.virtualFile)) return@filter false
-
-            // 2. Exclude Enum Constants
-            if (v is PsiEnumConstant) return@filter false
-
-            // 3. Exclude @Column annotated variables
-            if (v.annotations.any { it.qualifiedName?.contains("Column") == true }) return@filter false
-
-            // 4. Exclude Library/Compiled Code
-            if (v !is PsiCompiledElement && v.isPhysical) {
-                // 5. Overrides Check (for fields/parameters)
-                // If a field overrides a superclass field, renaming it might break polymorphism or hide fields.
-                // Simple heuristic: Only rename private/package-private fields or local vars to stay safe.
-                if (v is PsiField) {
-                    if (v.hasModifierProperty(PsiModifier.PUBLIC) || v.hasModifierProperty(PsiModifier.PROTECTED)) {
-                        // Skip public/protected fields to avoid breaking external consumers or overrides
-                        return@filter false
-                    }
-                }
-                true
-            } else {
-                false
-            }
+            passesVariableFilters(v, psiFile)
         }
 
         if (filteredVariables.isNotEmpty()) {
