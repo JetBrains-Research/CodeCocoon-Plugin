@@ -7,14 +7,18 @@ import com.github.pderakhshanfar.codecocoonplugin.services.MetamorphicTextTransf
 import com.intellij.openapi.application.ApplicationStarter
 import com.intellij.openapi.diagnostic.thisLogger
 import kotlinx.coroutines.runBlocking
-import kotlinx.serialization.encodeToString
-import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.jsonObject
 import java.io.File
 import kotlin.system.exitProcess
 
 /**
  * Application starter for running text transformation in headless mode.
- * This is the entry point when the IDE is launched with the 'transform-texts' command.
+ * Reads a benchmark-record JSON file, applies rename/move sync to the main
+ * `{title, body}` block and each `resolved_issues[i].{title, body}` block (one LLM
+ * call per block so title and body stay coherent), and writes a same-schema JSON file.
+ *
+ * Entry point when the IDE is launched with the 'transform-texts' command.
  */
 class TransformTextsStarter : ApplicationStarter {
     override val requiredModality: Int = ApplicationStarter.NOT_IN_EDT
@@ -22,12 +26,12 @@ class TransformTextsStarter : ApplicationStarter {
 
     override fun main(args: List<String>) {
         val memoryFile = System.getProperty("transform.memoryFile") ?: ""
-        val problemStatement = System.getProperty("transform.problemStatement") ?: ""
+        val inputFile = System.getProperty("transform.inputFile") ?: ""
         val outputFile = System.getProperty("transform.outputFile") ?: ""
 
-        if (memoryFile.isEmpty() || problemStatement.isEmpty() || outputFile.isEmpty()) {
+        if (memoryFile.isEmpty() || inputFile.isEmpty() || outputFile.isEmpty()) {
             logger.error("[TransformTexts] Missing required parameters")
-            logger.error("[TransformTexts] Required system properties: transform.memoryFile, transform.problemStatement, transform.outputFile")
+            logger.error("[TransformTexts] Required system properties: transform.memoryFile, transform.inputFile, transform.outputFile")
             exitProcess(1)
         }
 
@@ -41,28 +45,41 @@ class TransformTextsStarter : ApplicationStarter {
             try {
                 logger.info("[TransformTexts] Starting text transformation")
                 logger.info("[TransformTexts] Memory file: $memoryFile")
+                logger.info("[TransformTexts] Input file:  $inputFile")
 
                 val llm = LLM.fromGrazie(
                     model = OpenAIModels.Chat.GPT5Mini,
-                    token = token
+                    token = token,
                 )
-
                 val transformer = MetamorphicTextTransformer(llm)
 
-                val result = transformer.transformTexts(
-                    problemStatement = problemStatement,
-                    memoryFilePath = memoryFile
-                )
-
-                if (result != null) {
-                    val json = Json.encodeToString(result)
-                    File(outputFile).writeText(json)
-                    logger.info("[TransformTexts] SUCCESS: Transformed texts written to: $outputFile")
-                    exitProcess(0)
-                } else {
-                    logger.error("[TransformTexts] ERROR: Failed to transform texts")
+                val renameMap = transformer.loadRenameMap(memoryFile)
+                if (renameMap == null) {
+                    logger.error("[TransformTexts] Failed to load rename map from '$memoryFile'")
                     exitProcess(1)
                 }
+
+                val inputJson = BenchmarkInstanceIO.json
+                    .parseToJsonElement(File(inputFile).readText())
+                    .jsonObject
+
+                val outputJson = if (renameMap.isEmpty()) {
+                    logger.warn("[TransformTexts] Rename map is empty; copying input verbatim")
+                    inputJson
+                } else {
+                    BenchmarkInstanceIO.transformInstance(inputJson) { block ->
+                        try {
+                            transformer.transformBlock(block, renameMap)
+                        } catch (e: Exception) {
+                            logger.error("[TransformTexts] Block-level transformation failed; keeping original block: ${e.message}", e)
+                            null
+                        }
+                    }
+                }
+
+                File(outputFile).writeText(BenchmarkInstanceIO.json.encodeToString(JsonObject.serializer(), outputJson))
+                logger.info("[TransformTexts] SUCCESS: Transformed record written to: $outputFile")
+                exitProcess(0)
             } catch (e: Exception) {
                 logger.error("[TransformTexts] ERROR: ${e.message}", e)
                 e.printStackTrace(System.err)

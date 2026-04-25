@@ -236,42 +236,43 @@ intellijPlatformTesting {
             }
         }
 
-        // Custom task for metamorphic text transformation (runs within IntelliJ platform)
+        // Custom task for metamorphic text transformation (runs within IntelliJ platform).
+        // Reads a benchmark-record JSON file, applies rename/move sync block by block,
+        // and writes a same-schema JSON file.
         register("transformMetamorphicTexts") {
             task {
-                // Program arguments for the transformation
                 args(listOf("transform-texts"))
 
-                // Pass parameters via system properties
                 val memoryFile = project.findProperty("memoryFile") as? String ?: ""
-                val problemStatement = project.findProperty("problemStatement") as? String ?: ""
+                val inputFile = project.findProperty("inputFile") as? String ?: ""
                 val outputFile = project.findProperty("outputFile") as? String ?: ""
 
-                // JVM arguments
                 jvmArgs(
                     "-Xmx4G",
                     "-Djava.awt.headless=true",
                     "--add-exports", "java.base/jdk.internal.vm=ALL-UNNAMED",
                     "-Dtransform.memoryFile=${memoryFile}",
-                    "-Dtransform.problemStatement=${problemStatement}",
+                    "-Dtransform.inputFile=${inputFile}",
                     "-Dtransform.outputFile=${outputFile}",
                 )
             }
         }
 
-        // Custom task for paraphrasing the problem statement (semantic-preserving rewrite)
+        // Custom task for paraphrasing benchmark-record texts (semantic-preserving rewrite).
+        // Reads a benchmark-record JSON file, paraphrases each {title, body} block,
+        // and writes a same-schema JSON file.
         register("rewriteProblemStatement") {
             task {
                 args(listOf("rewrite-problem-statement"))
 
-                val problemStatement = project.findProperty("problemStatement") as? String ?: ""
+                val inputFile = project.findProperty("inputFile") as? String ?: ""
                 val outputFile = project.findProperty("outputFile") as? String ?: ""
 
                 jvmArgs(
                     "-Xmx4G",
                     "-Djava.awt.headless=true",
                     "--add-exports", "java.base/jdk.internal.vm=ALL-UNNAMED",
-                    "-Drewrite.problemStatement=${problemStatement}",
+                    "-Drewrite.inputFile=${inputFile}",
                     "-Drewrite.outputFile=${outputFile}",
                 )
             }
