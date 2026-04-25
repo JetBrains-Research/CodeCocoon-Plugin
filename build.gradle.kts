@@ -245,7 +245,6 @@ intellijPlatformTesting {
                 // Pass parameters via system properties
                 val memoryFile = project.findProperty("memoryFile") as? String ?: ""
                 val problemStatement = project.findProperty("problemStatement") as? String ?: ""
-                val interfaceDesc = project.findProperty("interfaceDesc") as? String ?: ""
                 val outputFile = project.findProperty("outputFile") as? String ?: ""
 
                 // JVM arguments
@@ -255,7 +254,6 @@ intellijPlatformTesting {
                     "--add-exports", "java.base/jdk.internal.vm=ALL-UNNAMED",
                     "-Dtransform.memoryFile=${memoryFile}",
                     "-Dtransform.problemStatement=${problemStatement}",
-                    "-Dtransform.interfaceDesc=${interfaceDesc}",
                     "-Dtransform.outputFile=${outputFile}",
                 )
             }

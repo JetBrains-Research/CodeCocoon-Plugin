@@ -3,6 +3,8 @@ package com.github.pderakhshanfar.codecocoonplugin.services
 import ai.koog.prompt.dsl.Prompt
 import ai.koog.prompt.executor.clients.openai.OpenAIModels
 import com.github.pderakhshanfar.codecocoonplugin.common.LLM
+import com.github.pderakhshanfar.codecocoonplugin.intellij.logging.withStdout
+import com.intellij.openapi.diagnostic.thisLogger
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
@@ -11,36 +13,36 @@ import kotlinx.serialization.encodeToString
 import java.io.File
 
 /**
- * Transforms problem statements and interface descriptions for metamorphic test instances
- * by updating class and method names according to the rename memory.
+ * Transforms problem statements for metamorphic test instances by updating class, method,
+ * and variable names — and package references when files were moved — according to the
+ * rename memory.
  */
 class MetamorphicTextTransformer(
     private val llm: LLM,
 ) {
+    private val logger = thisLogger().withStdout()
 
     @Serializable
     data class TransformedTexts(
         val problemStatement: String,
-        val interfaceDescription: String,
     )
 
     /**
-     * Transforms both the problem statement and interface description using the memory file.
+     * Transforms the problem statement using the memory file.
      *
      * @param problemStatement The original problem statement
-     * @param interfaceDescription The original interface description
      * @param memoryFilePath Path to the memory JSON file containing class/method renames
+     *                       and (optionally) file-move entries
      * @return TransformedTexts with updated names
      */
     suspend fun transformTexts(
         problemStatement: String,
-        interfaceDescription: String,
         memoryFilePath: String,
     ): TransformedTexts? {
         // Load memory file
         val memoryFile = File(memoryFilePath)
         if (!memoryFile.exists()) {
-            println("ERROR: Memory file not found: $memoryFilePath")
+            logger.error("ERROR: Memory file not found: $memoryFilePath")
             return null
         }
 
@@ -48,7 +50,7 @@ class MetamorphicTextTransformer(
         val entries = memoryJson.jsonObject["entries"]?.jsonObject
 
         if (entries == null) {
-            println("ERROR: No 'entries' field found in memory file")
+            logger.error("ERROR: No 'entries' field found in memory file")
             return null
         }
 
@@ -59,16 +61,16 @@ class MetamorphicTextTransformer(
         }
 
         if (renameMap.isEmpty()) {
-            println("WARNING: No rename entries found in memory file")
-            return TransformedTexts(problemStatement, interfaceDescription)
+            logger.warn("WARNING: No rename entries found in memory file")
+            return TransformedTexts(problemStatement)
         }
 
         // Create the prompt
         val prompt = createTransformationPrompt(
             problemStatement = problemStatement,
-            interfaceDescription = interfaceDescription,
             renameMap = renameMap
         )
+        logger.info("Created prompt:\n'''$prompt\n'''")
 
         // Call LLM
         val result = llm.structuredRequest<TransformedTexts>(
@@ -82,7 +84,6 @@ class MetamorphicTextTransformer(
 
     private fun createTransformationPrompt(
         problemStatement: String,
-        interfaceDescription: String,
         renameMap: Map<String, String>
     ): Prompt {
         return Prompt.build("metamorphic-text-transformer") {
@@ -93,13 +94,23 @@ class MetamorphicTextTransformer(
 
                     You will be given:
                     1. An original problem statement
-                    2. An original interface description
-                    3. A mapping of old class/method names to new names
+                    2. A mapping of old class/method/variable names AND old file paths to their new
+                       names or new locations
+
+                    The mapping may contain two kinds of entries:
+                    - Identifier renames: the value is a Java identifier (e.g. `computeTotal`).
+                      Replace every occurrence of the old simple name in the problem statement with
+                      the new one wherever it appears (class names, method calls, variable mentions,
+                      fully-qualified references, etc.).
+                    - File / package moves: the value looks like a filesystem path or directory
+                      (contains `/` or `\`). The corresponding source file was relocated, which
+                      typically changes its Java package. Update any fully-qualified class
+                      references, `import` statements, or package mentions in the problem statement
+                      to reflect the new package implied by the new directory.
 
                     Your task:
-                    - Update the problem statement and interface description to use the NEW names
+                    - Update the problem statement to use the NEW names and NEW packages
                     - Keep the meaning and structure exactly the same
-                    - Only change the class, method, and variable names according to the mapping
                     - Preserve all formatting, punctuation, and sentence structure
                     - If a name doesn't appear in the mapping, leave it unchanged
 
@@ -107,7 +118,7 @@ class MetamorphicTextTransformer(
                     - Do NOT add new information
                     - Do NOT remove information
                     - Do NOT rephrase or rewrite the content
-                    - ONLY update the names that appear in the rename mapping
+                    - ONLY update the names and packages indicated by the rename mapping
                 """.trimIndent())
             }
 
@@ -116,20 +127,25 @@ class MetamorphicTextTransformer(
                 text(problemStatement)
                 text("\n\n")
 
-                text("## Original Interface Description\n")
-                text(interfaceDescription)
-                text("\n\n")
+                val (moves, renames) = renameMap.entries.partition { (_, value) ->
+                    value.contains('/') || value.contains('\\')
+                }
 
-                text("## Rename Mapping (OldName -> NewName)\n")
-                renameMap.forEach { (old, new) ->
-                    // Extract simple class name from fully qualified name
+                text("## Identifier renames (OldSimpleName -> NewSimpleName)\n")
+                renames.forEach { (old, new) ->
                     val oldSimple = old.substringAfterLast('.')
-                    val newSimple = new
-                    text("- $oldSimple -> $newSimple\n")
+                    text("- $oldSimple -> $new\n")
+                }
+
+                if (moves.isNotEmpty()) {
+                    text("\n## File/package moves (OldPath -> NewDirectory)\n")
+                    moves.forEach { (old, new) ->
+                        text("- $old -> $new\n")
+                    }
                 }
 
                 text("\n")
-                text("Now, update the problem statement and interface description with the new names.")
+                text("Now, update the problem statement with the new names and packages.")
             }
         }
     }
@@ -141,20 +157,18 @@ class MetamorphicTextTransformer(
  * Usage:
  * ./gradlew transformMetamorphicTexts \
  *   -PproblemStatement="..." \
- *   -PinterfaceDesc="..." \
  *   -PmemoryFile="/path/to/memory.json" \
  *   -PoutputFile="/path/to/output.json"
  */
 suspend fun main(args: Array<String>) {
-    if (args.size != 4) {
-        println("Usage: transformMetamorphicTexts <problemStatement> <interfaceDesc> <memoryFile> <outputFile>")
+    if (args.size != 3) {
+        println("Usage: transformMetamorphicTexts <problemStatement> <memoryFile> <outputFile>")
         return
     }
 
     val problemStatement = args[0]
-    val interfaceDesc = args[1]
-    val memoryFile = args[2]
-    val outputFile = args[3]
+    val memoryFile = args[1]
+    val outputFile = args[2]
 
     try {
         // Initialize LLM (using GPT-4 via Grazie)
@@ -173,7 +187,6 @@ suspend fun main(args: Array<String>) {
         println("Transforming texts using memory file: $memoryFile")
         val result = transformer.transformTexts(
             problemStatement = problemStatement,
-            interfaceDescription = interfaceDesc,
             memoryFilePath = memoryFile
         )
 

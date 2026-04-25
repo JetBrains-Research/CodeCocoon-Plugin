@@ -23,12 +23,11 @@ class TransformTextsStarter : ApplicationStarter {
     override fun main(args: List<String>) {
         val memoryFile = System.getProperty("transform.memoryFile") ?: ""
         val problemStatement = System.getProperty("transform.problemStatement") ?: ""
-        val interfaceDesc = System.getProperty("transform.interfaceDesc") ?: ""
         val outputFile = System.getProperty("transform.outputFile") ?: ""
 
-        if (memoryFile.isEmpty() || problemStatement.isEmpty() || interfaceDesc.isEmpty() || outputFile.isEmpty()) {
+        if (memoryFile.isEmpty() || problemStatement.isEmpty() || outputFile.isEmpty()) {
             logger.error("[TransformTexts] Missing required parameters")
-            logger.error("[TransformTexts] Required system properties: transform.memoryFile, transform.problemStatement, transform.interfaceDesc, transform.outputFile")
+            logger.error("[TransformTexts] Required system properties: transform.memoryFile, transform.problemStatement, transform.outputFile")
             exitProcess(1)
         }
 
@@ -52,7 +51,6 @@ class TransformTextsStarter : ApplicationStarter {
 
                 val result = transformer.transformTexts(
                     problemStatement = problemStatement,
-                    interfaceDescription = interfaceDesc,
                     memoryFilePath = memoryFile
                 )
 
