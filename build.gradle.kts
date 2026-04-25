@@ -258,5 +258,23 @@ intellijPlatformTesting {
                 )
             }
         }
+
+        // Custom task for paraphrasing the problem statement (semantic-preserving rewrite)
+        register("rewriteProblemStatement") {
+            task {
+                args(listOf("rewrite-problem-statement"))
+
+                val problemStatement = project.findProperty("problemStatement") as? String ?: ""
+                val outputFile = project.findProperty("outputFile") as? String ?: ""
+
+                jvmArgs(
+                    "-Xmx4G",
+                    "-Djava.awt.headless=true",
+                    "--add-exports", "java.base/jdk.internal.vm=ALL-UNNAMED",
+                    "-Drewrite.problemStatement=${problemStatement}",
+                    "-Drewrite.outputFile=${outputFile}",
+                )
+            }
+        }
     }
 }
