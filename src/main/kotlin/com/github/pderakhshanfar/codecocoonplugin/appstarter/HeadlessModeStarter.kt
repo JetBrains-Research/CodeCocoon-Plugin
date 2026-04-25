@@ -6,6 +6,7 @@ import com.github.pderakhshanfar.codecocoonplugin.components.transformations.Tra
 import com.github.pderakhshanfar.codecocoonplugin.components.transformations.renaming.RenameClassTransformation
 import com.github.pderakhshanfar.codecocoonplugin.components.transformations.renaming.RenameMethodTransformation
 import com.github.pderakhshanfar.codecocoonplugin.components.transformations.renaming.RenameVariableTransformation
+import com.github.pderakhshanfar.codecocoonplugin.components.transformations.structural.ReorderClassMethodsTransformation
 import com.github.pderakhshanfar.codecocoonplugin.config.CodeCocoonConfig
 import com.github.pderakhshanfar.codecocoonplugin.config.ConfigLoader
 import com.github.pderakhshanfar.codecocoonplugin.intellij.JvmProjectConfigurator
@@ -193,10 +194,13 @@ class HeadlessModeStarter : ApplicationStarter {
      * unique ID in the registry, allowing it to be referenced dynamically during execution.
      */
     private fun registerBuiltInTransformations() {
+        // renaming
         TransformationRegistry.register(AddCommentTransformation.ID) { config -> AddCommentTransformation(config) }
         TransformationRegistry.register(RenameMethodTransformation.ID) { config -> RenameMethodTransformation(config) }
         TransformationRegistry.register(RenameClassTransformation.ID) { config -> RenameClassTransformation(config) }
         TransformationRegistry.register(RenameVariableTransformation.ID) { config -> RenameVariableTransformation(config) }
+
+        // structural
         // move file transformation:
         // 1) with AI suggested directory
         TransformationRegistry.register(MoveFileIntoSuggestedDirectoryTransformation.Companion.AI.ID) { config ->
@@ -205,6 +209,10 @@ class HeadlessModeStarter : ApplicationStarter {
         // 2) with a config-defined suggested directory
         TransformationRegistry.register(MoveFileIntoSuggestedDirectoryTransformation.Companion.Config.ID) { config ->
             MoveFileIntoSuggestedDirectoryTransformation.withConfig(config)
+        }
+        // reorder class methods transformation
+        TransformationRegistry.register(ReorderClassMethodsTransformation.ID) { config ->
+            ReorderClassMethodsTransformation(config)
         }
     }
 
