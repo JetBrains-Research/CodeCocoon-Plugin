@@ -1,7 +1,7 @@
 package com.github.pderakhshanfar.codecocoonplugin.appstarter
 
 import com.github.pderakhshanfar.codecocoonplugin.components.transformations.AddCommentTransformation
-import com.github.pderakhshanfar.codecocoonplugin.components.transformations.MoveFileIntoSuggestedDirectoryTransformation
+import com.github.pderakhshanfar.codecocoonplugin.components.transformations.structural.MoveFileIntoSuggestedDirectoryTransformation
 import com.github.pderakhshanfar.codecocoonplugin.components.transformations.TransformationRegistry
 import com.github.pderakhshanfar.codecocoonplugin.components.transformations.renaming.RenameClassTransformation
 import com.github.pderakhshanfar.codecocoonplugin.components.transformations.renaming.RenameMethodTransformation
