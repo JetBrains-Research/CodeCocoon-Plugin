@@ -20,7 +20,6 @@ import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.openapi.vfs.VfsUtilCore
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.openapi.vfs.VirtualFileVisitor
-import java.io.File
 
 /**
  * Application-level service responsible for managing metamorphic transformations
@@ -133,9 +132,8 @@ class TransformationService {
 
         // Create a global memory instance for the entire project
         // Memory is automatically saved via .use {} when the block exits
-        val projectName = project.basePath?.let { File(it).name } ?: project.name
-        PersistentMemory(projectName, config.memoryDir).use { memory ->
-            logger.info("[TransformationService] Created global memory for project '$projectName'")
+        PersistentMemory(config.memoryFilepath).use { memory ->
+            logger.info("[TransformationService] Created global memory at '${config.memoryFilepath}'")
 
             var successCount = 0
             var failureCount = 0
