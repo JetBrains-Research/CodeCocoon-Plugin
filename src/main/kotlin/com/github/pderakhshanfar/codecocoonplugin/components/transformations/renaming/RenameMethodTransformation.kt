@@ -678,15 +678,47 @@ class RenameMethodTransformation(
         // Step 1: Collect all methods without filtering
         val allMethods = collectAllMethods(psiFile)
 
-        // Step 2: Filter out override methods BEFORE grouping
-        // Override methods must keep their original names to maintain inheritance contracts
+        // Step 2: Filter out genuine overrides BEFORE grouping.
+        // Override methods must keep their original names to maintain inheritance contracts.
+        //
+        // Two guards beyond the obvious findSuperMethods() check:
+        //   1. Skip the check entirely for `static` methods — Java statics are
+        //      not inherited, so findSuperMethods() for a static is a category
+        //      error. The PSI implementation can return false positives when
+        //      an unrelated type elsewhere in the project declares a method
+        //      with the same name + erased parameter list (observed: fastjson
+        //      v1-compat `com.alibaba.fastjson.JSON.toJSONString(Object)`
+        //      reported as a super of the v2 static interface method, causing
+        //      that overload to be silently dropped from the family).
+        //   2. For instance methods, require the matched super-method's
+        //      containing class to be in the declared extends/implements chain
+        //      of the owning class — not just any project-wide name match.
         val nonOverrideMethods = allMethods.filter { method ->
-            val superMethods = method.findSuperMethods()
-            if (superMethods.isNotEmpty()) {
+            val isStatic = IntelliJAwareTransformation.withReadAction {
+                method.hasModifierProperty(PsiModifier.STATIC)
+            }
+            if (isStatic) {
+                return@filter true
+            }
+            val superMethods = IntelliJAwareTransformation.withReadAction { method.findSuperMethods() }
+            if (superMethods.isEmpty()) {
+                return@filter true
+            }
+            val ownerSupers = IntelliJAwareTransformation.withReadAction {
+                method.containingClass?.supers?.mapNotNull { it.qualifiedName }?.toSet().orEmpty()
+            }
+            val genuineOverride = IntelliJAwareTransformation.withReadAction {
+                superMethods.any { sm -> sm.containingClass?.qualifiedName in ownerSupers }
+            }
+            if (genuineOverride) {
                 val signature = IntelliJAwareTransformation.withReadAction {
                     PsiSignatureGenerator.generateSignature(method)
                 }
-                logger.info("    ⊘ Method `${method.name}` ($signature) - skipped (overrides super method from `${superMethods.firstOrNull()?.containingClass?.qualifiedName}`)")
+                val ownerFqn = IntelliJAwareTransformation.withReadAction {
+                    superMethods.firstOrNull { sm -> sm.containingClass?.qualifiedName in ownerSupers }
+                        ?.containingClass?.qualifiedName
+                }
+                logger.info("    ⊘ Method `${method.name}` ($signature) - skipped (overrides super method from `$ownerFqn`)")
                 false
             } else {
                 true
