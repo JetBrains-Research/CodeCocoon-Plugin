@@ -343,6 +343,20 @@ class RenameVariableTransformation(
                 )
             }
 
+            // Snapshot modified files BEFORE run(): findUsages() must run on
+            // the pre-rename PSI to return the references that will actually
+            // be rewritten. After run() the seed element has been renamed and
+            // the result is unreliable — that previously caused the Javadoc
+            // `@param` tag to be rewritten in some morph runs but not others.
+            val modifiedFiles = withReadAction {
+                val files = mutableSetOf<PsiFile>()
+                renameProcessor.findUsages().forEach { usageInfo ->
+                    usageInfo.file?.let { files.add(it) }
+                }
+                psiVariable.containingFile?.let { files.add(it) }
+                files
+            }
+
             ApplicationManager.getApplication().invokeAndWait {
                 PsiDocumentManager.getInstance(project).commitAllDocuments()
                 renameProcessor.run()
@@ -352,15 +366,6 @@ class RenameVariableTransformation(
                 // produced non-deterministic import positions across morph runs.
                 PsiDocumentManager.getInstance(project).commitAllDocuments()
                 FileDocumentManager.getInstance().saveAllDocuments()
-            }
-
-            val modifiedFiles = withReadAction {
-                val files = mutableSetOf<PsiFile>()
-                renameProcessor.findUsages().forEach { usageInfo ->
-                    usageInfo.file?.let { files.add(it) }
-                }
-                psiVariable.containingFile?.let { files.add(it) }
-                files
             }
 
             val fileCountString = if (modifiedFiles.size > 1) " in ${modifiedFiles.size} files" else ""

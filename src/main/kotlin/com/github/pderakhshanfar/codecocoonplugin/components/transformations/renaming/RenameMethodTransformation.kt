@@ -140,7 +140,9 @@ class RenameMethodTransformation(
                             emptyMap()
                         }
 
-                        // Try each suggestion until one succeeds for ALL methods in the family
+                        // Try each suggestion until one succeeds for the whole family.
+                        // The family is renamed atomically via a single RenameProcessor —
+                        // see tryRenameMethodFamily for why per-method iteration is unsafe.
                         var familyRenamed = false
                         for (suggestion in suggestions) {
                             // Skip if suggestion is the same as the original name (no-op rename)
@@ -148,15 +150,14 @@ class RenameMethodTransformation(
                                 continue
                             }
 
-                            // Attempt to rename all methods in the family to the same name
                             logger.info("       • ${familyIndex + 1}) Renaming `$familyName` overload family to `$suggestion` (${family.methods.size} overloads):")
-                            val allSucceeded = family.methods.all { method ->
-                                val files = tryRenameMethodAndUsages(psiFile.project, method, suggestion, searchInComments)
-                                if (files != null) {
-                                    modifiedFiles.addAll(files)
+                            val files = tryRenameMethodFamily(psiFile.project, family.methods, suggestion, searchInComments)
+                            if (files != null) {
+                                modifiedFiles.addAll(files)
 
-                                    // Store in memory if needed (using pre-generated signature)
-                                    if (saveRenamesInMemory) {
+                                // Store all family signatures in memory under the same suggestion
+                                if (saveRenamesInMemory) {
+                                    for (method in family.methods) {
                                         val signature = methodSignatures[method]
                                         if (signature != null) {
                                             memory?.put(signature, suggestion)
@@ -165,13 +166,8 @@ class RenameMethodTransformation(
                                             logger.warn("          ⊘ Could not generate signature for method before renaming")
                                         }
                                     }
-                                    true
-                                } else {
-                                    false
                                 }
-                            }
 
-                            if (allSucceeded) {
                                 renamedMethodCount += family.methods.size
                                 familyRenamed = true
                                 break
@@ -373,22 +369,58 @@ class RenameMethodTransformation(
         return if (normalized.contains(internalFallback)) normalized else normalized + internalFallback
     }
 
-    private fun tryRenameMethodAndUsages(
+    /**
+     * Renames an entire overload family atomically by registering all family
+     * members on a single [RenameProcessor] (seed + `addElement`) and running
+     * once. This way IntelliJ resolves overload-bound call-sites against the
+     * complete family before rewriting, so varargs / multi-arg call sites
+     * referencing any overload are rewritten consistently.
+     *
+     * The previous per-method approach left stray call sites untouched
+     * because the resolver could rebind to another overload mid-loop.
+     *
+     * Returns the set of modified files (snapshotted from `findUsages()`
+     * BEFORE `run()`, so the seed PSI element is still in its original
+     * state), or null on failure.
+     */
+    private fun tryRenameMethodFamily(
         project: Project,
-        method: PsiMethod,
+        methods: List<PsiMethod>,
         newName: String,
         searchInComments: Boolean,
     ): MutableSet<PsiFile>? {
+        if (methods.isEmpty()) return null
         return try {
-            val oldName = method.name
+            val firstMethod = methods.first()
+            val oldName = IntelliJAwareTransformation.withReadAction { firstMethod.name }
+
             val renameProcessor = IntelliJAwareTransformation.withReadAction {
-                RenameProcessor(
+                val processor = RenameProcessor(
                     /* project = */ project,
-                    /* element = */ method,
+                    /* element = */ firstMethod,
                     /* newName = */ newName,
-                    /* isSearchInComments= */ searchInComments,
-                    /* isSearchTextOccurrences = */ false
+                    /* isSearchInComments = */ searchInComments,
+                    /* isSearchTextOccurrences = */ false,
                 )
+                for (extra in methods.drop(1)) {
+                    processor.addElement(extra, newName)
+                }
+                processor
+            }
+
+            // Snapshot modified files BEFORE run(): findUsages() must run on
+            // the pre-rename PSI to return the references that will actually
+            // be rewritten. After run() the seed element has been renamed and
+            // the result is unreliable.
+            val modifiedFiles = IntelliJAwareTransformation.withReadAction {
+                val files = mutableSetOf<PsiFile>()
+                renameProcessor.findUsages().forEach { usageInfo ->
+                    usageInfo.file?.let { files.add(it) }
+                }
+                for (method in methods) {
+                    method.containingFile?.let { files.add(it) }
+                }
+                files
             }
 
             ApplicationManager.getApplication().invokeAndWait {
@@ -402,23 +434,17 @@ class RenameMethodTransformation(
                 FileDocumentManager.getInstance().saveAllDocuments()
             }
 
-            val modifiedFiles = IntelliJAwareTransformation.withReadAction {
-                val files = mutableSetOf<PsiFile>()
-                renameProcessor.findUsages().forEach { usageInfo ->
-                    usageInfo.file?.let { files.add(it) }
-                }
-                method.containingFile?.let { files.add(it) }
-                files
-            }
-            logger.info("          • Renamed `$oldName` to `$newName` in ${modifiedFiles.size} files")
+            val overloadLabel = if (methods.size > 1) "${methods.size} overloads" else "1 overload"
+            logger.info("          • Renamed `$oldName` ($overloadLabel) to `$newName` in ${modifiedFiles.size} files")
             modifiedFiles
         } catch (e: ProcessCanceledException) {
             // Must rethrow control flow exceptions
-            logger.warn("Rename method and usage cancelled: ${e.message}")
+            logger.warn("Rename method family cancelled: ${e.message}")
             throw e
         } catch (e: Exception) {
             // Rename failed (conflicts, PSI errors, etc.) - return null to try the next suggestion
-            logger.info("          ⊘ Skipped ${method.name}:\n      (Reason: ${e.message})")
+            val familyName = methods.firstOrNull()?.name ?: "<unknown>"
+            logger.info("          ⊘ Skipped family `$familyName`:\n      (Reason: ${e.message})")
             null
         }
     }

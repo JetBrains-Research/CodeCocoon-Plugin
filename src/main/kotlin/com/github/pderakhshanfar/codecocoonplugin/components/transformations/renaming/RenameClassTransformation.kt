@@ -298,6 +298,19 @@ class RenameClassTransformation(
                 )
             }
 
+            // Snapshot modified files BEFORE run(): findUsages() must run on
+            // the pre-rename PSI to return the references that will actually
+            // be rewritten. After run() the seed element has been renamed and
+            // the result is unreliable.
+            val modifiedFiles = withReadAction {
+                val files = mutableSetOf<PsiFile>()
+                renameProcessor.findUsages().forEach { usageInfo ->
+                    usageInfo.file?.let { files.add(it) }
+                }
+                psiClass.containingFile?.let { files.add(it) }
+                files
+            }
+
             ApplicationManager.getApplication().invokeAndWait {
                 PsiDocumentManager.getInstance(project).commitAllDocuments()
                 renameProcessor.run()
@@ -307,15 +320,6 @@ class RenameClassTransformation(
                 // produced non-deterministic import positions across morph runs.
                 PsiDocumentManager.getInstance(project).commitAllDocuments()
                 FileDocumentManager.getInstance().saveAllDocuments()
-            }
-
-            val modifiedFiles = withReadAction {
-                val files = mutableSetOf<PsiFile>()
-                renameProcessor.findUsages().forEach { usageInfo ->
-                    usageInfo.file?.let { files.add(it) }
-                }
-                psiClass.containingFile?.let { files.add(it) }
-                files
             }
             logger.info("    • Renamed `$oldName` to `$newName`")
             modifiedFiles
