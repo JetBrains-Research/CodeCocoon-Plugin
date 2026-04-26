@@ -19,11 +19,13 @@ import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.ApplicationStarter
 import com.intellij.openapi.components.service
 import com.intellij.openapi.diagnostic.thisLogger
+import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.project.ProjectManager
 import com.intellij.openapi.util.Disposer
 import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.openapi.vfs.VfsUtil
+import com.intellij.psi.PsiDocumentManager
 import com.intellij.psi.codeStyle.JavaCodeStyleSettings
 import kotlinx.coroutines.runBlocking
 import java.io.File
@@ -87,6 +89,15 @@ class HeadlessModeStarter : ApplicationStarter {
 
                 // close project and exit
                 logger.info("[CodeCocoon Starter] Execution completed")
+
+                // Final flush before close: commit any pending PSI changes and write
+                // documents to disk explicitly, so close-time hooks don't get a chance
+                // to introduce non-deterministic edits (e.g. import re-ordering whose
+                // outcome depends on accumulated unflushed state across rename calls).
+                ApplicationManager.getApplication().invokeAndWait {
+                    PsiDocumentManager.getInstance(project).commitAllDocuments()
+                    FileDocumentManager.getInstance().saveAllDocuments()
+                }
 
                 ApplicationManager.getApplication().invokeAndWait {
                     ProjectManager.getInstance().closeAndDispose(project)

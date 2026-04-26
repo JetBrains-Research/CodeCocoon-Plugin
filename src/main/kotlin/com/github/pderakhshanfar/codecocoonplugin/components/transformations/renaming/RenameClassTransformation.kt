@@ -17,6 +17,7 @@ import com.github.pderakhshanfar.codecocoonplugin.transformation.requireOrDefaul
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.readAction
 import com.intellij.openapi.diagnostic.thisLogger
+import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.progress.ProcessCanceledException
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.roots.ProjectFileIndex
@@ -300,6 +301,12 @@ class RenameClassTransformation(
             ApplicationManager.getApplication().invokeAndWait {
                 PsiDocumentManager.getInstance(project).commitAllDocuments()
                 renameProcessor.run()
+                // Lock in PSI/document/disk state immediately so subsequent renames
+                // (and the final project close) don't trigger close-time hooks whose
+                // behaviour depends on accumulated unflushed state — that previously
+                // produced non-deterministic import positions across morph runs.
+                PsiDocumentManager.getInstance(project).commitAllDocuments()
+                FileDocumentManager.getInstance().saveAllDocuments()
             }
 
             val modifiedFiles = withReadAction {
