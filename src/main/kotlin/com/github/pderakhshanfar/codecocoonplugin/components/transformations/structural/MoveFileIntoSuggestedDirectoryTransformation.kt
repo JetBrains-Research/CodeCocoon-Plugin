@@ -1,9 +1,10 @@
-package com.github.pderakhshanfar.codecocoonplugin.components.transformations
+package com.github.pderakhshanfar.codecocoonplugin.components.transformations.structural
 
 import com.github.pderakhshanfar.codecocoonplugin.common.TransformationStepFailed
 import com.github.pderakhshanfar.codecocoonplugin.components.transformations.IntelliJAwareTransformation.Companion.withReadAction
-import com.github.pderakhshanfar.codecocoonplugin.components.transformations.MoveFileIntoSuggestedDirectoryTransformation.Companion.withAI
-import com.github.pderakhshanfar.codecocoonplugin.components.transformations.MoveFileIntoSuggestedDirectoryTransformation.Companion.withConfig
+import com.github.pderakhshanfar.codecocoonplugin.components.transformations.SelfManagedTransformation
+import com.github.pderakhshanfar.codecocoonplugin.components.transformations.structural.MoveFileIntoSuggestedDirectoryTransformation.Companion.withAI
+import com.github.pderakhshanfar.codecocoonplugin.components.transformations.structural.MoveFileIntoSuggestedDirectoryTransformation.Companion.withConfig
 import com.github.pderakhshanfar.codecocoonplugin.executor.TransformationResult
 import com.github.pderakhshanfar.codecocoonplugin.intellij.logging.withStdout
 import com.github.pderakhshanfar.codecocoonplugin.intellij.psi.declarations
@@ -15,6 +16,7 @@ import com.github.pderakhshanfar.codecocoonplugin.transformation.requireOrDefaul
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.command.WriteCommandAction
 import com.intellij.openapi.diagnostic.thisLogger
+import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.progress.ProcessCanceledException
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.roots.ProjectFileIndex
@@ -28,6 +30,7 @@ import com.intellij.usageView.UsageInfo
 import kotlinx.coroutines.runBlocking
 import java.nio.file.Paths
 import java.util.concurrent.CompletableFuture
+import kotlin.collections.iterator
 
 
 /**
@@ -235,6 +238,14 @@ class MoveFileIntoSuggestedDirectoryTransformation private constructor(
                 ApplicationManager.getApplication().invokeAndWait {
                     PsiDocumentManager.getInstance(project).commitAllDocuments()
                     processor.run()
+                    // Lock in PSI/document/disk state immediately so subsequent
+                    // transformations (and the final project close) don't trigger
+                    // close-time hooks whose behaviour depends on accumulated
+                    // unflushed state — a move propagates package declarations and
+                    // import updates across every referencing file, the same cascade
+                    // pattern as a rename.
+                    PsiDocumentManager.getInstance(project).commitAllDocuments()
+                    FileDocumentManager.getInstance().saveAllDocuments()
                 }
             } catch (err: ProcessCanceledException) {
                 // NOTE: `ProcessCanceledException` cannot be silenced, see its Javadoc

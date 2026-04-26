@@ -235,5 +235,47 @@ intellijPlatformTesting {
                 )
             }
         }
+
+        // Custom task for metamorphic text transformation (runs within IntelliJ platform).
+        // Reads a benchmark-record JSON file, applies rename/move sync block by block,
+        // and writes a same-schema JSON file.
+        register("transformMetamorphicTexts") {
+            task {
+                args(listOf("transform-texts"))
+
+                val memoryFile = project.findProperty("memoryFile") as? String ?: ""
+                val inputFile = project.findProperty("inputFile") as? String ?: ""
+                val outputFile = project.findProperty("outputFile") as? String ?: ""
+
+                jvmArgs(
+                    "-Xmx4G",
+                    "-Djava.awt.headless=true",
+                    "--add-exports", "java.base/jdk.internal.vm=ALL-UNNAMED",
+                    "-Dtransform.memoryFile=${memoryFile}",
+                    "-Dtransform.inputFile=${inputFile}",
+                    "-Dtransform.outputFile=${outputFile}",
+                )
+            }
+        }
+
+        // Custom task for paraphrasing benchmark-record texts (semantic-preserving rewrite).
+        // Reads a benchmark-record JSON file, paraphrases each {title, body} block,
+        // and writes a same-schema JSON file.
+        register("rewriteProblemStatement") {
+            task {
+                args(listOf("rewrite-problem-statement"))
+
+                val inputFile = project.findProperty("inputFile") as? String ?: ""
+                val outputFile = project.findProperty("outputFile") as? String ?: ""
+
+                jvmArgs(
+                    "-Xmx4G",
+                    "-Djava.awt.headless=true",
+                    "--add-exports", "java.base/jdk.internal.vm=ALL-UNNAMED",
+                    "-Drewrite.inputFile=${inputFile}",
+                    "-Drewrite.outputFile=${outputFile}",
+                )
+            }
+        }
     }
 }

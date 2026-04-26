@@ -48,8 +48,8 @@ object ConfigLoader {
                 TransformationConfig(id = id, config = cfg)
             }
 
-            // Resolve memory directory
-            val memoryDir = resolveMemoryDir(root["memoryDir"]?.toString())
+            // Resolve memory file path
+            val memoryFilepath = resolveMemoryFilepath(root["memoryFilepath"]?.toString())
 
             // if projectRoot is present, try to search for the corresponding virtual file
             val projectRootFile = projectRoot?.refreshAndFindVirtualFile()
@@ -59,25 +59,25 @@ object ConfigLoader {
                 projectRootFile = projectRootFile,
                 files = files,
                 transformations = transformations,
-                memoryDir = memoryDir,
+                memoryFilepath = memoryFilepath,
             )
         }
     }
 
     /**
-     * Resolves the memory directory to an absolute path string.
+     * Resolves the memory JSON file path to an absolute path string.
      *
-     * If [memoryDirPath] is provided:
+     * If [memoryFilepath] is provided:
      * - If absolute: use as-is
      * - If relative: resolve relative to config file's parent directory
      *
-     * If [memoryDirPath] is null:
-     * - Default to ".codecocoon-memory" in config file's parent directory
+     * If [memoryFilepath] is null:
+     * - Default to ".codecocoon-memory.json" in config file's parent directory
      *
-     * @param memoryDirPath Optional memory directory path from YAML
-     * @return Resolved absolute path for memory directory
+     * @param memoryFilepath Optional memory file path from YAML
+     * @return Resolved absolute path to the memory JSON file
      */
-    private fun resolveMemoryDir(memoryDirPath: String?): String {
+    private fun resolveMemoryFilepath(memoryFilepath: String?): String {
         val configPath = System.getProperty("codecocoon.config")
             ?: throw IllegalStateException("codecocoon.config system property not set")
 
@@ -85,16 +85,17 @@ object ConfigLoader {
         val configParentDir = configFile.parentFile
             ?: throw IllegalStateException("Config file has no parent directory: $configPath")
 
-        return if (memoryDirPath != null) {
-            val memoryFile = File(memoryDirPath)
+        return if (memoryFilepath != null) {
+            val memoryFile = File(memoryFilepath)
             if (memoryFile.isAbsolute) {
                 memoryFile.canonicalPath
             } else {
-                File(configParentDir, memoryDirPath).canonicalPath
+                File(configParentDir, memoryFilepath).canonicalPath
             }
         } else {
-            // Default to .codecocoon-memory in config parent directory
-            File(configParentDir, ".codecocoon-memory").canonicalPath
+            // Default to .codecocoon-memory.json in config parent directory
+            val memoryDir = File(configParentDir, ".codecocoon-memory")
+            File(memoryDir, "memory.json").canonicalPath
         }
     }
 }

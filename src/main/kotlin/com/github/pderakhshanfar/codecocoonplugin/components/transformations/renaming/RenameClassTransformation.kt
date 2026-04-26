@@ -17,6 +17,7 @@ import com.github.pderakhshanfar.codecocoonplugin.transformation.requireOrDefaul
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.readAction
 import com.intellij.openapi.diagnostic.thisLogger
+import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.progress.ProcessCanceledException
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.roots.ProjectFileIndex
@@ -48,7 +49,31 @@ class RenameClassTransformation(
         val result = try {
             val useMemory = config.requireOrDefault<Boolean>("useMemory", defaultValue = false)
             val generateWhenNotInMemory = config.requireOrDefault<Boolean>("generateWhenNotInMemory", defaultValue = false)
+            val searchInComments = config.requireOrDefault<Boolean>("searchInComments", defaultValue = false)
+
+            // Annotation filtering configuration
             val whitelistedAnnotations = config.requireOrDefault<List<String>>("whitelistedAnnotations", defaultValue = emptyList())
+            val blacklistedAnnotationsRaw = config.requireOrDefault<List<String>>("blacklistedAnnotations", defaultValue = emptyList())
+
+            // Process blacklist: merge defaults if "_default" or "default" is present
+            val blacklistedAnnotations = if (blacklistedAnnotationsRaw.any { it.equals("_default", ignoreCase = true) || it.equals("default", ignoreCase = true) }) {
+                logger.info("  ↳ Include default blacklisted annotations ALONG with the custom ones (i.e., '_default' or 'default' keyword in the list)")
+
+                val customAnnotations = blacklistedAnnotationsRaw.filter { !it.equals("_default", ignoreCase = true) && !it.equals("default", ignoreCase = true) }
+                (DEFAULT_BLACKLISTED_CLASS_ANNOTATIONS + customAnnotations).toList()
+            } else {
+                // Warn if using blacklist mode without defaults
+                if (blacklistedAnnotationsRaw.isNotEmpty()) {
+                    logger.warn("  ⚠ Blacklist provided without '_default' keyword - framework annotations will NOT be automatically excluded")
+                }
+                blacklistedAnnotationsRaw
+            }
+
+            // Auto-detect mode: if whitelistedAnnotations is provided, use whitelist mode; otherwise blacklist
+            val annotationFilterMode = config.requireOrDefault<String>(
+                "annotationFilterMode",
+                defaultValue = if (whitelistedAnnotations.isNotEmpty()) "whitelist" else "blacklist"
+            )
 
             val document = withReadAction { psiFile.document() }
             val modifiedFiles = mutableSetOf<PsiFile>()
@@ -56,7 +81,9 @@ class RenameClassTransformation(
                 val eligibleClasses: List<PsiClass> = withReadAction {
                     findAllValidClasses(
                         psiFile = psiFile,
+                        annotationFilterMode = annotationFilterMode,
                         whitelistedClassAnnotations = whitelistedAnnotations,
+                        blacklistedClassAnnotations = blacklistedAnnotations,
                     )
                 }
 
@@ -92,7 +119,7 @@ class RenameClassTransformation(
 
                     // Try each suggestion until one succeeds
                     for (suggestion in suggestions) {
-                        val files = tryRenameClassAndUsages(psiFile.project, psiClass, suggestion)
+                        val files = tryRenameClassAndUsages(psiFile.project, psiClass, suggestion, searchInComments)
                         if (files != null) {
                             modifiedFiles.addAll(files)
                             if (saveRenamesInMemory) {
@@ -253,7 +280,10 @@ class RenameClassTransformation(
     }
 
     private fun tryRenameClassAndUsages(
-        project: Project, psiClass: PsiClass, newName: String
+        project: Project,
+        psiClass: PsiClass,
+        newName: String,
+        searchInComments: Boolean,
     ): MutableSet<PsiFile>? {
         return try {
             val oldName = psiClass.name ?: return null
@@ -263,16 +293,15 @@ class RenameClassTransformation(
                     /* project = */ project,
                     /* element = */ psiClass,
                     /* newName = */ newName,
-                    /* isSearchInComments= */ true,
+                    /* isSearchInComments= */ searchInComments,
                     /* isSearchTextOccurrences = */ false
                 )
             }
 
-            ApplicationManager.getApplication().invokeAndWait {
-                PsiDocumentManager.getInstance(project).commitAllDocuments()
-                renameProcessor.run()
-            }
-
+            // Snapshot modified files BEFORE run(): findUsages() must run on
+            // the pre-rename PSI to return the references that will actually
+            // be rewritten. After run() the seed element has been renamed and
+            // the result is unreliable.
             val modifiedFiles = withReadAction {
                 val files = mutableSetOf<PsiFile>()
                 renameProcessor.findUsages().forEach { usageInfo ->
@@ -280,6 +309,17 @@ class RenameClassTransformation(
                 }
                 psiClass.containingFile?.let { files.add(it) }
                 files
+            }
+
+            ApplicationManager.getApplication().invokeAndWait {
+                PsiDocumentManager.getInstance(project).commitAllDocuments()
+                renameProcessor.run()
+                // Lock in PSI/document/disk state immediately so subsequent renames
+                // (and the final project close) don't trigger close-time hooks whose
+                // behaviour depends on accumulated unflushed state — that previously
+                // produced non-deterministic import positions across morph runs.
+                PsiDocumentManager.getInstance(project).commitAllDocuments()
+                FileDocumentManager.getInstance().saveAllDocuments()
             }
             logger.info("    • Renamed `$oldName` to `$newName`")
             modifiedFiles
@@ -300,8 +340,33 @@ class RenameClassTransformation(
      */
     private fun findAllValidClasses(
         psiFile: PsiFile,
+        annotationFilterMode: String,
         whitelistedClassAnnotations: List<String>,
+        blacklistedClassAnnotations: List<String>,
     ): List<PsiClass> {
+        // Log annotation filter mode and relevant annotations
+        when (annotationFilterMode.lowercase()) {
+            "whitelist" -> {
+                if (whitelistedClassAnnotations.isNotEmpty()) {
+                    logger.info("  ↳ Annotation filter mode: WHITELIST")
+                    logger.info("  ↳ Whitelisted class annotations: [${whitelistedClassAnnotations.joinToString(", ")}]")
+                } else {
+                    logger.info("  ↳ Annotation filter mode: WHITELIST (empty - only non-annotated classes allowed)")
+                }
+            }
+            "blacklist" -> {
+                logger.info("  ↳ Annotation filter mode: BLACKLIST")
+                if (blacklistedClassAnnotations.isNotEmpty()) {
+                    logger.info("  ↳ Blacklisted class annotations: [\n${blacklistedClassAnnotations.joinToString(",\n") { "\t$it" } }\n]")
+                } else {
+                    logger.info("  ↳ Blacklisted class annotations: [] (all annotations allowed)")
+                }
+            }
+            else -> {
+                logger.warn("  ⚠ Unknown annotation filter mode: '$annotationFilterMode', defaulting to blacklist")
+            }
+        }
+
         val classes = mutableListOf<PsiClass>()
         psiFile.accept(object : PsiRecursiveElementVisitor() {
             override fun visitElement(element: PsiElement) {
@@ -322,19 +387,55 @@ class RenameClassTransformation(
                 val fileType = ref.element.containingFile.fileType.name
                 fileType != "JAVA" && fileType != "Kotlin"
             }
-            if (usedInNonJavaFile) return@filter false
+            if (usedInNonJavaFile) {
+                logger.info("    ⊘ Class `${cls.name}` - skipped (used in non-Java file)")
+                return@filter false
+            }
 
             // Is not a test
-            if (fileIndex.isInTestSourceContent(psiFile.virtualFile)) return@filter false
+            if (fileIndex.isInTestSourceContent(psiFile.virtualFile)) {
+                logger.info("    ⊘ Class `${cls.name}` - skipped (in test source)")
+                return@filter false
+            }
 
-            // either no annotations or whitelisted ones only
-            val annotationsFilter = cls.annotations.isEmpty()
-                    || cls.annotations.toList().allowedAnnotationsOnly(whitelistedClassAnnotations)
+            // Check annotation filter (whitelist or blacklist mode)
+            val classAnnotations = cls.annotations.toList()
+            val annotationsPassed = passesAnnotationFilter(
+                annotations = classAnnotations,
+                filterMode = annotationFilterMode,
+                whitelistedAnnotations = whitelistedClassAnnotations,
+                blacklistedAnnotations = blacklistedClassAnnotations
+            )
+
+            // Log annotation filtering for classes with annotations
+            if (classAnnotations.isNotEmpty()) {
+                val annotationNames = classAnnotations.mapNotNull { it.qualifiedName?.substringAfterLast('.') }
+                if (annotationsPassed) {
+                    val modeLabel = if (annotationFilterMode.lowercase() == "whitelist") "whitelisted" else "passed blacklist"
+                    logger.info("    ✓ Class `${cls.name}` with annotations [${annotationNames.joinToString(", ")}] - $modeLabel")
+                } else {
+                    val modeLabel = if (annotationFilterMode.lowercase() == "whitelist") "not whitelisted" else "blacklisted"
+                    logger.info("    ⊘ Class `${cls.name}` with annotations [${annotationNames.joinToString(", ")}] - skipped ($modeLabel)")
+                    return@filter false
+                }
+            }
 
             // Basic Filters
             val className = cls.name
+
+            // Check for null class name
+            if (className == null) {
+                logger.info("    ⊘ Class <anonymous> - skipped (null class name)")
+                return@filter false
+            }
+
             // We need to check for `cls.name.length` > 1 to filter out raw Type classes
-            (className != null) && (className.length > 1) && annotationsFilter
+            if (className.length <= 1) {
+                logger.info("    ⊘ Class `$className` - skipped (class name too short)")
+                return@filter false
+            }
+
+            true
         }
 
         if (filteredClasses.isNotEmpty()) {
@@ -345,8 +446,97 @@ class RenameClassTransformation(
         return filteredClasses
     }
 
+    /**
+     * Checks if annotations pass the configured filter mode (whitelist or blacklist).
+     *
+     * @param annotations List of annotations to check
+     * @param filterMode "whitelist" or "blacklist"
+     * @param whitelistedAnnotations Annotations to allow (when mode = whitelist)
+     * @param blacklistedAnnotations Annotations to forbid (when mode = blacklist)
+     * @return true if annotations pass the filter, false otherwise
+     */
+    private fun passesAnnotationFilter(
+        annotations: List<PsiAnnotation>,
+        filterMode: String,
+        whitelistedAnnotations: List<String>,
+        blacklistedAnnotations: List<String>,
+    ): Boolean {
+        if (annotations.isEmpty()) {
+            return true
+        }
+
+        return when (filterMode.lowercase()) {
+            "whitelist" -> {
+                // All annotations must be in the whitelist
+                annotations.all { annotation ->
+                    val qualifiedName = annotation.qualifiedName
+                    val simpleName = qualifiedName?.substringAfterLast('.')
+                    (qualifiedName != null) && (qualifiedName in whitelistedAnnotations || simpleName in whitelistedAnnotations)
+                }
+            }
+            "blacklist" -> {
+                // No annotations can be in the blacklist
+                annotations.none { annotation ->
+                    val qualifiedName = annotation.qualifiedName
+                    val simpleName = qualifiedName?.substringAfterLast('.')
+                    qualifiedName in blacklistedAnnotations || simpleName in blacklistedAnnotations
+                }
+            }
+            else -> {
+                logger.warn("    ⚠ Unknown annotation filter mode: '$filterMode', defaulting to blacklist")
+                // Default to blacklist mode with empty list (allow all)
+                true
+            }
+        }
+    }
+
     companion object {
         const val ID = "rename-class-transformation"
+
+        /**
+         * Default blacklisted class annotations (framework/infrastructure annotations).
+         * These annotations typically indicate classes that are managed by frameworks/containers,
+         * so renaming them could break runtime behavior or configuration.
+         */
+        val DEFAULT_BLACKLISTED_CLASS_ANNOTATIONS = setOf(
+            // JPA/Hibernate
+            "javax.persistence.Entity",
+            "javax.persistence.Table",
+            "javax.persistence.Embeddable",
+            "javax.persistence.MappedSuperclass",
+
+            // Spring Framework
+            "org.springframework.stereotype.Component",
+            "org.springframework.stereotype.Service",
+            "org.springframework.stereotype.Repository",
+            "org.springframework.stereotype.Controller",
+            "org.springframework.web.bind.annotation.RestController",
+            "org.springframework.web.bind.annotation.ControllerAdvice",
+            "org.springframework.context.annotation.Configuration",
+            "org.springframework.boot.autoconfigure.SpringBootApplication",
+            "org.springframework.jmx.export.annotation.ManagedResource",
+
+            // JAX-RS
+            "javax.ws.rs.Path",
+            "jakarta.ws.rs.Path",
+
+            // CDI
+            "javax.inject.Named",
+            "jakarta.inject.Named",
+            "javax.enterprise.context.ApplicationScoped",
+            "javax.enterprise.context.RequestScoped",
+            "javax.enterprise.context.SessionScoped",
+
+            // Jackson
+            "com.fasterxml.jackson.annotation.JsonRootName",
+
+            // JAXB
+            "javax.xml.bind.annotation.XmlRootElement",
+            "javax.xml.bind.annotation.XmlType",
+            "jakarta.xml.bind.annotation.XmlRootElement",
+            "jakarta.xml.bind.annotation.XmlType"
+        )
+
         private const val DEFAULT_SUGGESTED_NAMES_SIZE = 3
     }
 }
