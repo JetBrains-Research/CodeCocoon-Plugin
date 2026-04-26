@@ -16,6 +16,7 @@ import com.github.pderakhshanfar.codecocoonplugin.transformation.requireOrDefaul
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.command.WriteCommandAction
 import com.intellij.openapi.diagnostic.thisLogger
+import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.progress.ProcessCanceledException
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.roots.ProjectFileIndex
@@ -237,6 +238,14 @@ class MoveFileIntoSuggestedDirectoryTransformation private constructor(
                 ApplicationManager.getApplication().invokeAndWait {
                     PsiDocumentManager.getInstance(project).commitAllDocuments()
                     processor.run()
+                    // Lock in PSI/document/disk state immediately so subsequent
+                    // transformations (and the final project close) don't trigger
+                    // close-time hooks whose behaviour depends on accumulated
+                    // unflushed state — a move propagates package declarations and
+                    // import updates across every referencing file, the same cascade
+                    // pattern as a rename.
+                    PsiDocumentManager.getInstance(project).commitAllDocuments()
+                    FileDocumentManager.getInstance().saveAllDocuments()
                 }
             } catch (err: ProcessCanceledException) {
                 // NOTE: `ProcessCanceledException` cannot be silenced, see its Javadoc
