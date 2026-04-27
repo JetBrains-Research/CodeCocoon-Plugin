@@ -8,7 +8,6 @@ import com.github.pderakhshanfar.codecocoonplugin.components.transformations.Int
 import com.github.pderakhshanfar.codecocoonplugin.components.transformations.SelfManagedTransformation
 import com.github.pderakhshanfar.codecocoonplugin.executor.TransformationResult
 import com.github.pderakhshanfar.codecocoonplugin.intellij.logging.withStdout
-import com.github.pderakhshanfar.codecocoonplugin.intellij.psi.allowedAnnotationsOnly
 import com.github.pderakhshanfar.codecocoonplugin.intellij.psi.document
 import com.github.pderakhshanfar.codecocoonplugin.intellij.vfs.relativeToRootOrAbsPath
 import com.github.pderakhshanfar.codecocoonplugin.java.JavaTransformation
@@ -693,31 +692,25 @@ class RenameMethodTransformation(
         //   2. For instance methods, require the matched super-method's
         //      containing class to be in the declared extends/implements chain
         //      of the owning class — not just any project-wide name match.
+        // Already inside an outer `withReadAction { findAllValidMethodFamilies(...) }`
+        // at the call site — nesting `IntelliJAwareTransformation.withReadAction` here
+        // would re-enter `runBlocking { readAction { } }` on the same thread that already
+        // holds a non-blocking read lock and deadlock against any queued write action.
         val nonOverrideMethods = allMethods.filter { method ->
-            val isStatic = IntelliJAwareTransformation.withReadAction {
-                method.hasModifierProperty(PsiModifier.STATIC)
-            }
+            val isStatic = method.hasModifierProperty(PsiModifier.STATIC)
             if (isStatic) {
                 return@filter true
             }
-            val superMethods = IntelliJAwareTransformation.withReadAction { method.findSuperMethods() }
+            val superMethods = method.findSuperMethods()
             if (superMethods.isEmpty()) {
                 return@filter true
             }
-            val ownerSupers = IntelliJAwareTransformation.withReadAction {
-                method.containingClass?.supers?.mapNotNull { it.qualifiedName }?.toSet().orEmpty()
-            }
-            val genuineOverride = IntelliJAwareTransformation.withReadAction {
-                superMethods.any { sm -> sm.containingClass?.qualifiedName in ownerSupers }
-            }
+            val ownerSupers = method.containingClass?.supers?.mapNotNull { it.qualifiedName }?.toSet().orEmpty()
+            val genuineOverride = superMethods.any { sm -> sm.containingClass?.qualifiedName in ownerSupers }
             if (genuineOverride) {
-                val signature = IntelliJAwareTransformation.withReadAction {
-                    PsiSignatureGenerator.generateSignature(method)
-                }
-                val ownerFqn = IntelliJAwareTransformation.withReadAction {
-                    superMethods.firstOrNull { sm -> sm.containingClass?.qualifiedName in ownerSupers }
-                        ?.containingClass?.qualifiedName
-                }
+                val signature = PsiSignatureGenerator.generateSignature(method)
+                val ownerFqn = superMethods.firstOrNull { sm -> sm.containingClass?.qualifiedName in ownerSupers }
+                    ?.containingClass?.qualifiedName
                 logger.info("    ⊘ Method `${method.name}` ($signature) - skipped (overrides super method from `$ownerFqn`)")
                 false
             } else {
@@ -756,10 +749,8 @@ class RenameMethodTransformation(
                     }
                     logger.info("      • ${family.methodName} [$modifier, ${family.methods.size} overload(s)]:")
 
-                    val signatures = IntelliJAwareTransformation.withReadAction {
-                        family.methods.mapNotNull { method ->
-                            PsiSignatureGenerator.generateSignature(method)
-                        }
+                    val signatures = family.methods.mapNotNull { method ->
+                        PsiSignatureGenerator.generateSignature(method)
                     }
 
                     val displayLimit = 10
