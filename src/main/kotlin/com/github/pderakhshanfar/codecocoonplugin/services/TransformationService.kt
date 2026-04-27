@@ -11,15 +11,18 @@ import com.github.pderakhshanfar.codecocoonplugin.intellij.vfs.findVirtualFile
 import com.github.pderakhshanfar.codecocoonplugin.intellij.vfs.relativeToRootOrAbsPath
 import com.github.pderakhshanfar.codecocoonplugin.memory.PersistentMemory
 import com.github.pderakhshanfar.codecocoonplugin.transformation.Transformation
+import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.smartReadAction
 import com.intellij.openapi.components.Service
 import com.intellij.openapi.diagnostic.thisLogger
+import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.project.guessProjectDir
 import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.openapi.vfs.VfsUtilCore
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.openapi.vfs.VirtualFileVisitor
+import com.intellij.psi.PsiDocumentManager
 
 /**
  * Application-level service responsible for managing metamorphic transformations
@@ -197,6 +200,19 @@ class TransformationService {
                             }
                         }
                     }
+                }
+
+                // Flush PSI changes to disk once per file context (cheaper than flushing after every rename).
+                ApplicationManager.getApplication().invokeAndWait {
+                    val commitStart = System.currentTimeMillis()
+                    logger.info("[TransformationService] Committing all documents for '$filepath'...")
+                    PsiDocumentManager.getInstance(project).commitAllDocuments()
+                    logger.info("[TransformationService] Committed all documents in ${System.currentTimeMillis() - commitStart}ms")
+
+                    val saveStart = System.currentTimeMillis()
+                    logger.info("[TransformationService] Saving all documents for '$filepath'...")
+                    FileDocumentManager.getInstance().saveAllDocuments()
+                    logger.info("[TransformationService] Saved all documents in ${System.currentTimeMillis() - saveStart}ms")
                 }
             }
 
