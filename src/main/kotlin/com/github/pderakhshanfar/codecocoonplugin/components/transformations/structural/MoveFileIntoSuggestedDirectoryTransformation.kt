@@ -196,6 +196,10 @@ class MoveFileIntoSuggestedDirectoryTransformation private constructor(
         val projectRoot = project.basePath
             ?: return TransformationResult.Failure("Project root not found")
 
+        val currentParent = withReadAction {
+            Paths.get(fileToMove.virtualFile.parent.path).normalize().toString()
+        }
+
         logger.info("  ⏲ Attempting to move $filename into suggestions...")
         for ((index, suggestionPath) in suggestions.withIndex()) {
             logger.info("    ↳ Attempting suggestion #${index + 1}: '$suggestionPath'")
@@ -209,6 +213,13 @@ class MoveFileIntoSuggestedDirectoryTransformation private constructor(
             } else {
                 // the suggested path is already absolute, no need to prepend project root
                 suggestionPath
+            }
+
+            // skip suggestions pointing at the file's current package — would be a no-op move
+            // and would pollute memory with a self-pointing entry.
+            if (Paths.get(suggestion).normalize().toString() == currentParent) {
+                logger.warn("    ⚠ Skipping suggestion #${index + 1}: '$suggestion' equals the current package/directory of '$filename'")
+                continue
             }
 
             val suggestedDirectory = WriteCommandAction.runWriteCommandAction<VirtualFile>(project) {
