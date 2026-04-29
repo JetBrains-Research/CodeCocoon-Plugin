@@ -27,6 +27,7 @@ import com.intellij.psi.search.searches.ReferencesSearch
 import com.intellij.refactoring.move.MoveCallback
 import com.intellij.refactoring.move.moveFilesOrDirectories.MoveFilesOrDirectoriesProcessor
 import com.intellij.usageView.UsageInfo
+import com.intellij.util.containers.MultiMap
 import kotlinx.coroutines.runBlocking
 import java.nio.file.Paths
 import java.util.concurrent.CompletableFuture
@@ -111,7 +112,7 @@ class MoveFileIntoSuggestedDirectoryTransformation private constructor(
             val suggestedDirectories = result.getOrThrow()
             logger.info("    • Received ${suggestedDirectories.size} directory suggestions")
 
-            return tryToMoveFileIntoSuggestedDirectory(
+            tryToMoveFileIntoSuggestedDirectory(
                 project = psiFile.project,
                 fileToMove = psiFile,
                 suggestions = suggestedDirectories,
@@ -262,8 +263,15 @@ class MoveFileIntoSuggestedDirectoryTransformation private constructor(
                 // NOTE: `ProcessCanceledException` cannot be silenced, see its Javadoc
                 throw err
             } catch (err: Exception) {
-                logger.error("Failed to move '$filename' into suggestion #${index + 1}", err)
+                logger.error("    ✗ Suggestion #${index + 1} for '$filename' failed: ${err.message}; trying next suggestion", err)
+                // unblock the join below so the loop can advance to the next suggestion
+                successfullyMoved.complete(false)
             }
+
+            // If the processor aborted without invoking moveCallback (e.g. showConflicts returned
+            // false because the move would break package-private references), the future is still
+            // unset — complete it as `false` so the join doesn't hang. Idempotent on success.
+            successfullyMoved.complete(false)
 
             // finish when moved successfully into the current suggestion
             if (successfullyMoved.join()) {
@@ -412,6 +420,18 @@ private class MoveFilesOrDirectoriesProcessorWrapper(
 ) {
     val foundUsages: Map<PsiFile, List<UsageInfo>>
         get() = myFoundUsages
+
+    // BaseRefactoringProcessor.showConflicts throws ConflictsInTestsException in headless/test
+    // mode. Convert that into a graceful abort: log the conflicts and tell the base processor
+    // to skip the refactor (return false) — the calling loop then advances to the next suggestion.
+    override fun showConflicts(conflicts: MultiMap<PsiElement, String>, usages: Array<UsageInfo>?): Boolean {
+        if (!conflicts.isEmpty) {
+            val conflictStr = conflicts.values().joinToString("\n") { "    - $it;" }
+            thisLogger().withStdout().warn("    ⚠ Move blocked by ${conflicts.size()} conflict(s):\n$conflictStr")
+            return false
+        }
+        return super.showConflicts(conflicts, usages)
+    }
 }
 
 /**
