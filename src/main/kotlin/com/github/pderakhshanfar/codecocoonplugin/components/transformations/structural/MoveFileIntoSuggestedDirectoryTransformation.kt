@@ -268,11 +268,6 @@ class MoveFileIntoSuggestedDirectoryTransformation private constructor(
                 successfullyMoved.complete(false)
             }
 
-            // If the processor aborted without invoking moveCallback (e.g. showConflicts returned
-            // false because the move would break package-private references), the future is still
-            // unset — complete it as `false` so the join doesn't hang. Idempotent on success.
-            successfullyMoved.complete(false)
-
             // finish when moved successfully into the current suggestion
             if (successfullyMoved.join()) {
                 val (filesModified, usageSummary) = withReadAction {
