@@ -240,7 +240,13 @@ class MoveFileIntoSuggestedDirectoryTransformation private constructor(
                     searchInNonJavaFiles = false,
                     moveCallback = {
                         // overriding `refactoringCompleted` method
+                        logger.info("    • Move processor called `moveCallback`: setting `successfullyMoved=true`")
                         successfullyMoved.complete(true)
+                    },
+                    onConflictsFoundCallback = {
+                        // set `successfullyMoved` to false -> unsuccessful/aborted move operation
+                        logger.warn("    ✗ Move processor called `onConflictsFoundCallback`: setting `successfullyMoved=false`")
+                        successfullyMoved.complete(false)
                     },
                     prepareSuccessfulCallback = { /* no-op */ },
                 )
@@ -249,7 +255,9 @@ class MoveFileIntoSuggestedDirectoryTransformation private constructor(
             try {
                 ApplicationManager.getApplication().invokeAndWait {
                     PsiDocumentManager.getInstance(project).commitAllDocuments()
+                    logger.info("    ↳ Move processor starts running...")
                     processor.run()
+                    logger.info("    • Move processor finished running")
                     // Lock in PSI/document/disk state immediately so subsequent
                     // transformations (and the final project close) don't trigger
                     // close-time hooks whose behaviour depends on accumulated
@@ -269,7 +277,10 @@ class MoveFileIntoSuggestedDirectoryTransformation private constructor(
             }
 
             // finish when moved successfully into the current suggestion
-            if (successfullyMoved.join()) {
+            logger.info("    ↳ Awaiting completion of move operation (i.e., `successfullyMoved.join()`)...")
+            val moveResult = successfullyMoved.join()
+            logger.info("    ↳ Move operation for suggestion #${index + 1} for '$filename' ${if (moveResult) "succeeded" else "failed"}: '$suggestedDirectory'")
+            if (moveResult) {
                 val (filesModified, usageSummary) = withReadAction {
                     val usages = processor.foundUsages
 
@@ -395,6 +406,8 @@ class MoveFileIntoSuggestedDirectoryTransformation private constructor(
 /**
  * This wrapper delegates ALL methods to [MoveFilesOrDirectoriesProcessor].
  * It only exposes a protected [myFoundUsages] variable for enriched logging.
+ *
+ * @param onConflictsFoundCallback called when conflicts list is NOT empty in [showConflicts] method.
  */
 private class MoveFilesOrDirectoriesProcessorWrapper(
     project: Project,
@@ -403,6 +416,7 @@ private class MoveFilesOrDirectoriesProcessorWrapper(
     searchInComments: Boolean,
     searchInNonJavaFiles: Boolean,
     moveCallback: MoveCallback,
+    private val onConflictsFoundCallback: Runnable,
     prepareSuccessfulCallback: Runnable
 ) : MoveFilesOrDirectoriesProcessor(
     project,
@@ -421,8 +435,11 @@ private class MoveFilesOrDirectoriesProcessorWrapper(
     // to skip the refactor (return false) — the calling loop then advances to the next suggestion.
     override fun showConflicts(conflicts: MultiMap<PsiElement, String>, usages: Array<UsageInfo>?): Boolean {
         if (!conflicts.isEmpty) {
+            // running callback on failed move operation
+            onConflictsFoundCallback.run()
+
             val conflictStr = conflicts.values().joinToString("\n") { "    - $it;" }
-            thisLogger().withStdout().warn("    ⚠ Move blocked by ${conflicts.size()} conflict(s):\n$conflictStr")
+            thisLogger().withStdout().warn("    ⚠ Move blocked by ${conflicts.size()} conflict(s):\n'''\n$conflictStr\n'''")
             return false
         }
         return super.showConflicts(conflicts, usages)
