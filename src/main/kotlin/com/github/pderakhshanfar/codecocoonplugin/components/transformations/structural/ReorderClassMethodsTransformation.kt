@@ -72,25 +72,25 @@ class ReorderClassMethodsTransformation(
                                     "${it.name} ($reason)"
                                 }
                                 logger.info(
-                                    "      ⊘ Class `${psiClass.name}` - dropped ${droppedMethods.size} method(s) " +
+                                    "      ⊘ Class `${psiClass.className}` - dropped ${droppedMethods.size} method(s) " +
                                         "before reorder: $droppedNames"
                                 )
                             }
                             if (methods.size < 2) {
-                                logger.warn("    ⊘ Class `${psiClass.name}` - has ${methods.size} reorderable method(s) (skipping)")
+                                logger.warn("    ⊘ Class `${psiClass.className}` - has ${methods.size} reorderable method(s) (skipping)")
                                 continue
                             }
 
                             val sortedMethods = reorderMethods(methods)
 
                             if (sortedMethods.map { it.name } == methods.map { it.name }) {
-                                logger.info("    ⊘ Class `${psiClass.name}` - methods already in desired order")
+                                logger.info("    ⊘ Class `${psiClass.className}` - methods already in desired order")
                                 continue
                             }
 
                             val rBrace = psiClass.rBrace
                             if (rBrace == null) {
-                                logger.warn("    ⊘ Class `${psiClass.name}` - no closing brace, skipping")
+                                logger.warn("    ⊘ Class `${psiClass.className}` - no closing brace, skipping")
                                 continue
                             }
 
@@ -102,7 +102,7 @@ class ReorderClassMethodsTransformation(
                             val firstNullCopy = copies.firstOrNull { it.second == null }
                             if (firstNullCopy != null) {
                                 logger.warn(
-                                    "    ⊘ Class `${psiClass.name}` - method " +
+                                    "    ⊘ Class `${psiClass.className}` - method " +
                                         "`${firstNullCopy.first.name}` is non-copyable (likely synthetic / " +
                                         "augmented PSI); skipping class to avoid partial reorder"
                                 )
@@ -120,13 +120,13 @@ class ReorderClassMethodsTransformation(
 
                             reorderedClassCount += 1
                             totalMethodsTouched += methods.size
-                            logger.info("    ✓ Class `${psiClass.name}` - reordered ${methods.size} methods")
+                            logger.info("    ✓ Class `${psiClass.className}` - reordered ${methods.size} methods")
                         }
                         catch (err: ProcessCanceledException) {
                             throw err
                         }
                         catch (e: Exception) {
-                            logger.error("    ✗ Class `${psiClass.name}` - failed to reorder methods: ${e.message}", e)
+                            logger.error("    ✗ Class `${psiClass.className}` - failed to reorder methods: ${e.message}", e)
                         }
                     }
 
@@ -197,6 +197,9 @@ class ReorderClassMethodsTransformation(
         })
         return classes
     }
+
+    private val PsiClass.className: String
+        get() = this.name ?: "[anonymous-class]"
 
     companion object {
         const val ID = "reorder-class-methods-transformation"
