@@ -172,16 +172,17 @@ class ReorderClassMethodsTransformation(
                 if (element !is PsiClass) {
                     return
                 }
+                // TODO(NOTE): don't skip anonymous classes for eval (possibly, more transformations with anonymous classes included)
                 // Skip anonymous classes (visited inside method bodies) — reordering their
                 // methods is not the user's intent and they often have non-copyable PSI.
-                if (element is PsiAnonymousClass) {
+                /*if (element is PsiAnonymousClass) {
                     logger.info("    ⊘ Skipping anonymous class inside ${psiFile.name}")
                     return
                 }
                 if (element.name == null) {
                     logger.info("    ⊘ Skipping unnamed class-like element in ${psiFile.name}")
                     return
-                }
+                }*/
                 // Skip compiled / non-physical classes (mirror RenameVariableTransformation).
                 if (element is PsiCompiledElement) {
                     logger.info("    ⊘ Skipping compiled class `${element.name}` in ${psiFile.name}")
