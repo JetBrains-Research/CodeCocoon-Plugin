@@ -13,7 +13,9 @@ import com.intellij.openapi.diagnostic.thisLogger
 import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.progress.ProcessCanceledException
 import com.intellij.openapi.vfs.VirtualFile
+import com.intellij.psi.PsiAnonymousClass
 import com.intellij.psi.PsiClass
+import com.intellij.psi.PsiCompiledElement
 import com.intellij.psi.PsiDocumentManager
 import com.intellij.psi.PsiElement
 import com.intellij.psi.PsiFile
@@ -56,37 +58,76 @@ class ReorderClassMethodsTransformation(
                     PsiDocumentManager.getInstance(project).commitAllDocuments()
 
                     for (psiClass in classes) {
-                        val methods = psiClass.methods.toList()
-                        if (methods.size < 2) {
-                            logger.warn("    ⊘ Class `${psiClass.name}` - has ${methods.size} methods (skipping)")
-                            continue
-                        }
+                        try {
+                            val allMethods = psiClass.methods.toList()
+                            val methods = allMethods.filter { it.isPhysical && it !is PsiCompiledElement }
+                            val droppedMethods = allMethods - methods.toSet()
+                            if (droppedMethods.isNotEmpty()) {
+                                val droppedNames = droppedMethods.joinToString(", ") {
+                                    val reason = when {
+                                        it is PsiCompiledElement -> "compiled"
+                                        !it.isPhysical -> "non-physical"
+                                        else -> "filtered"
+                                    }
+                                    "${it.name} ($reason)"
+                                }
+                                logger.info(
+                                    "      ⊘ Class `${psiClass.name}` - dropped ${droppedMethods.size} method(s) " +
+                                        "before reorder: $droppedNames"
+                                )
+                            }
+                            if (methods.size < 2) {
+                                logger.warn("    ⊘ Class `${psiClass.name}` - has ${methods.size} reorderable method(s) (skipping)")
+                                continue
+                            }
 
-                        val sortedMethods = reorderMethods(methods)
+                            val sortedMethods = reorderMethods(methods)
 
-                        if (sortedMethods.map { it.name } == methods.map { it.name }) {
-                            logger.info("    ⊘ Class `${psiClass.name}` - methods already in desired order")
-                            continue
-                        }
+                            if (sortedMethods.map { it.name } == methods.map { it.name }) {
+                                logger.info("    ⊘ Class `${psiClass.name}` - methods already in desired order")
+                                continue
+                            }
 
-                        val rBrace = psiClass.rBrace
-                        if (rBrace == null) {
-                            logger.warn("    ⊘ Class `${psiClass.name}` - no closing brace, skipping")
-                            continue
-                        }
+                            val rBrace = psiClass.rBrace
+                            if (rBrace == null) {
+                                logger.warn("    ⊘ Class `${psiClass.name}` - no closing brace, skipping")
+                                continue
+                            }
 
-                        // add sorted methods into class
-                        for (method in sortedMethods) {
-                            psiClass.addBefore(method.copy(), rBrace)
-                        }
-                        // remove original methods
-                        for (method in methods) {
-                            method.delete()
-                        }
+                            // Pre-validate that every method can be copied. PsiElement.copy() returns null
+                            // for non-copyable elements (synthetic / PsiAugmentProvider-injected light methods,
+                            // etc.), and addBefore(null, ...) would crash with @NotNull violation. Doing this
+                            // before any mutation avoids leaving the class in a half-deleted / half-added state.
+                            val copies = sortedMethods.map { it to it.copy() as? PsiMethod }
+                            val firstNullCopy = copies.firstOrNull { it.second == null }
+                            if (firstNullCopy != null) {
+                                logger.warn(
+                                    "    ⊘ Class `${psiClass.name}` - method " +
+                                        "`${firstNullCopy.first.name}` is non-copyable (likely synthetic / " +
+                                        "augmented PSI); skipping class to avoid partial reorder"
+                                )
+                                continue
+                            }
 
-                        reorderedClassCount += 1
-                        totalMethodsTouched += methods.size
-                        logger.info("    ✓ Class `${psiClass.name}` - reordered ${methods.size} methods")
+                            // add sorted methods into class
+                            for ((_, copy) in copies) {
+                                psiClass.addBefore(copy!!, rBrace)
+                            }
+                            // remove original methods
+                            for (method in sortedMethods) {
+                                method.delete()
+                            }
+
+                            reorderedClassCount += 1
+                            totalMethodsTouched += methods.size
+                            logger.info("    ✓ Class `${psiClass.name}` - reordered ${methods.size} methods")
+                        }
+                        catch (err: ProcessCanceledException) {
+                            throw err
+                        }
+                        catch (e: Exception) {
+                            logger.error("    ✗ Class `${psiClass.name}` - failed to reorder methods: ${e.message}", e)
+                        }
                     }
 
                     val document = psiFile.document()
@@ -128,9 +169,29 @@ class ReorderClassMethodsTransformation(
         psiFile.accept(object : PsiRecursiveElementVisitor() {
             override fun visitElement(element: PsiElement) {
                 super.visitElement(element)
-                if (element is PsiClass) {
-                    classes.add(element)
+                if (element !is PsiClass) {
+                    return
                 }
+                // Skip anonymous classes (visited inside method bodies) — reordering their
+                // methods is not the user's intent and they often have non-copyable PSI.
+                if (element is PsiAnonymousClass) {
+                    logger.info("    ⊘ Skipping anonymous class inside ${psiFile.name}")
+                    return
+                }
+                if (element.name == null) {
+                    logger.info("    ⊘ Skipping unnamed class-like element in ${psiFile.name}")
+                    return
+                }
+                // Skip compiled / non-physical classes (mirror RenameVariableTransformation).
+                if (element is PsiCompiledElement) {
+                    logger.info("    ⊘ Skipping compiled class `${element.name}` in ${psiFile.name}")
+                    return
+                }
+                if (!element.isPhysical) {
+                    logger.info("    ⊘ Skipping non-physical class `${element.name}` in ${psiFile.name}")
+                    return
+                }
+                classes.add(element)
             }
         })
         return classes
