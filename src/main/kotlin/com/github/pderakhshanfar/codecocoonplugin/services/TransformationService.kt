@@ -140,9 +140,10 @@ class TransformationService {
         PersistentMemory(projectName, config.memoryDir).use { memory ->
             logger.info("[TransformationService] Created global memory for project '$projectName'")
 
-            var successCount = 0
-            var failureCount = 0
-            var skippedCount = 0
+            val succeededIds = mutableListOf<String>()
+            val failedIds = mutableListOf<String>()
+            val skippedIds = mutableListOf<String>()
+            var fileSkippedCount = 0
 
             // Collect and filter file contexts together with their virtual files
             logger.info("[TransformationService] Collecting file contexts for ${files.size} files...")
@@ -158,14 +159,14 @@ class TransformationService {
                             "  ✗ Failed to create file context for file: '$filePath'. Skipping this filepath.",
                             result.exceptionOrNull(),
                         )
-                        skippedCount++
+                        fileSkippedCount++
                         continue
                     }
 
                     val context = result.getOrThrow()
                     // filter unwanted files
                     if (!fileFilter(context)) {
-                        skippedCount++
+                        fileSkippedCount++
                         continue
                     }
                     add(context)
@@ -190,15 +191,15 @@ class TransformationService {
                         when (val result = executor.execute(transformation, context, memory)) {
                             is TransformationResult.Success -> {
                                 logger.info("    ✓ ${result.message}")
-                                successCount++
+                                succeededIds += transformation.id
                             }
                             is TransformationResult.Failure -> {
                                 logger.error("    ✗ ${result.error}", result.exception)
-                                failureCount++
+                                failedIds += transformation.id
                             }
                             is TransformationResult.Skipped -> {
                                 logger.info("    ⊘ Skipped: ${result.reason}")
-                                skippedCount++
+                                skippedIds += transformation.id
                             }
                         }
                     }
@@ -218,7 +219,16 @@ class TransformationService {
                 }
             }
 
-            logger.info("[TransformationService] Transformation summary: $successCount succeeded, $failureCount failed, $skippedCount skipped")
+            val header = buildString {
+                append("[TransformationService] Transformation summary: ")
+                append("${succeededIds.size} succeeded, ${failedIds.size} failed, ${skippedIds.size} skipped")
+                if (fileSkippedCount > 0) append(", $fileSkippedCount files skipped")
+                append(":")
+            }
+            logger.info(header)
+            logger.info("[TransformationService]      - succeeded: ${succeededIds.joinToString(", ")}")
+            logger.info("[TransformationService]      - failed:    ${failedIds.joinToString(", ")}")
+            logger.info("[TransformationService]      - skipped:   ${skippedIds.joinToString(", ")}")
         }
     }
 
