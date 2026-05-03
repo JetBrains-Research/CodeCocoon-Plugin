@@ -498,9 +498,18 @@ class RenameMethodTransformation(
         val psiManager = PsiManager.getInstance(project)
         val factory = JavaPsiFacade.getElementFactory(project)
 
-        val toPatch = mutableListOf<PsiIdentifier>()
+        data class PatchSite(
+            val id: PsiIdentifier,
+            val path: String,
+            val line: Int,
+            val viaResolvedFamily: Boolean,
+        )
+
+        val patchSites = mutableListOf<PatchSite>()
+        val docManager = PsiDocumentManager.getInstance(project)
         for (vf in files) {
             val psiFile = psiManager.findFile(vf) as? PsiJavaFile ?: continue
+            val document = docManager.getDocument(psiFile)
             psiFile.accept(object : JavaRecursiveElementVisitor() {
                 override fun visitMethodCallExpression(expr: PsiMethodCallExpression) {
                     super.visitMethodCallExpression(expr)
@@ -516,24 +525,35 @@ class RenameMethodTransformation(
                         qualifierClass?.qualifiedName == containingFqn
 
                     if (resolvesToFamily || (resolved == null && qualifierMatchesContainingClass)) {
-                        val id = refExpr.referenceNameElement
-                        if (id is PsiIdentifier) toPatch.add(id)
+                        val id = refExpr.referenceNameElement as? PsiIdentifier ?: return
+                        val line = document?.getLineNumber(id.textRange.startOffset)?.plus(1) ?: -1
+                        patchSites.add(PatchSite(id, vf.path, line, resolvesToFamily))
                     }
                 }
             })
         }
 
-        if (toPatch.isEmpty()) return 0
+        if (patchSites.isEmpty()) return 0
 
         WriteCommandAction.runWriteCommandAction(project) {
-            for (id in toPatch) {
-                if (!id.isValid) continue
+            for (p in patchSites) {
+                if (!p.id.isValid) continue
                 val newId = factory.createIdentifier(newName)
-                id.replace(newId)
+                p.id.replace(newId)
             }
         }
-        logger.info("          ↳ Post-rename safety net: patched ${toPatch.size} missed call site(s) for `$oldName` → `$newName`")
-        return toPatch.size
+        val resolvedCount = patchSites.count { it.viaResolvedFamily }
+        val fallbackCount = patchSites.size - resolvedCount
+        logger.info("          ↳ Post-rename safety net: patched ${patchSites.size} missed call site(s) for `$oldName` → `$newName`")
+        logger.info("              resolved-to-family: $resolvedCount, qualifier-fallback: $fallbackCount")
+        patchSites.take(10).forEach { p ->
+            val tag = if (p.viaResolvedFamily) "resolved-to-family" else "qualifier-fallback"
+            logger.info("              ${p.path}:${p.line} ($tag)")
+        }
+        if (patchSites.size > 10) {
+            logger.info("              ... (${patchSites.size - 10} more)")
+        }
+        return patchSites.size
     }
 
     /**

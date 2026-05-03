@@ -7,6 +7,7 @@ import com.github.pderakhshanfar.codecocoonplugin.components.executor.IntelliJTr
 import com.github.pderakhshanfar.codecocoonplugin.config.CodeCocoonConfig
 import com.github.pderakhshanfar.codecocoonplugin.executor.TransformationResult
 import com.github.pderakhshanfar.codecocoonplugin.intellij.logging.withStdout
+import com.github.pderakhshanfar.codecocoonplugin.intellij.psi.WildcardImportExpander
 import com.github.pderakhshanfar.codecocoonplugin.intellij.vfs.findVirtualFile
 import com.github.pderakhshanfar.codecocoonplugin.intellij.vfs.relativeToRootOrAbsPath
 import com.github.pderakhshanfar.codecocoonplugin.memory.PersistentMemory
@@ -129,6 +130,13 @@ class TransformationService {
         fileFilter: (FileContext) -> Boolean = { true }
     ) {
         logger.info("[TransformationService] Applying ${transformations.size} transformations")
+
+        // Pre-expand wildcard imports project-wide so RenameProcessor's post-rename
+        // import optimizer can't strip a wildcard line on files it touches and
+        // leave referenced symbols (e.g. `assertNull` from
+        // `import static junit.framework.TestCase.*;`) unresolved.
+        logger.info("[TransformationService] Pre-expanding wildcard imports project-wide...")
+        WildcardImportExpander.expandAll(project)
 
         val files = listProjectFiles(project, config.projectRoot, includeOnly = config.files)
         val executor = IntelliJTransformationExecutor(project)
