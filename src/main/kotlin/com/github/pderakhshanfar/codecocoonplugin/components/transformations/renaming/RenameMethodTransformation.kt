@@ -28,6 +28,7 @@ import com.intellij.psi.*
 import com.intellij.psi.search.FileTypeIndex
 import com.intellij.psi.search.GlobalSearchScope
 import com.intellij.psi.search.searches.ReferencesSearch
+import com.intellij.psi.util.PsiTreeUtil
 import com.intellij.refactoring.rename.RenameProcessor
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.Serializable
@@ -525,6 +526,11 @@ class RenameMethodTransformation(
                         qualifierClass?.qualifiedName == containingFqn
 
                     if (resolvesToFamily || (resolved == null && qualifierMatchesContainingClass)) {
+                        // Defensive: never patch identifiers inside annotation args
+                        // (annotation member references, not overload-resolved calls).
+                        if (PsiTreeUtil.getParentOfType(expr, PsiAnnotation::class.java) != null) {
+                            return
+                        }
                         val id = refExpr.referenceNameElement as? PsiIdentifier ?: return
                         val line = document?.getLineNumber(id.textRange.startOffset)?.plus(1) ?: -1
                         patchSites.add(PatchSite(id, vf.path, line, resolvesToFamily))
