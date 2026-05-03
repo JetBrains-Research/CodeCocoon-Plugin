@@ -135,8 +135,10 @@ class TransformationService {
         // import optimizer can't strip a wildcard line on files it touches and
         // leave referenced symbols (e.g. `assertNull` from
         // `import static junit.framework.TestCase.*;`) unresolved.
-        logger.info("[TransformationService] Pre-expanding wildcard imports project-wide...")
-        WildcardImportExpander.expandAll(project)
+
+        // TODO: WildcardImportExpander misses some imports -> skip it
+        // logger.info("[TransformationService] Pre-expanding wildcard imports project-wide...")
+        // WildcardImportExpander.expandAll(project)
 
         val files = listProjectFiles(project, config.projectRoot, includeOnly = config.files)
         val executor = IntelliJTransformationExecutor(project)
