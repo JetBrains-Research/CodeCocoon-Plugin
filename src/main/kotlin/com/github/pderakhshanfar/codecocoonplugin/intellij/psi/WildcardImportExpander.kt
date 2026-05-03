@@ -43,11 +43,18 @@ import kotlinx.coroutines.runBlocking
  * Run once per project, before any transformation, across every Java file in
  * project scope (not just files we transform — RenameProcessor can touch
  * cross-module references in files we never enumerate).
+ *
+ * **Static-inheritance attribution:** `import static X.*;` legitimately exposes
+ * any static defined on `X` OR any of its supers (e.g. `TestCase` exposes
+ * `assertNull` declared on `Assert`). PSI's resolver returns the *declaring*
+ * class, not the imported one. We therefore attribute usage by querying the
+ * target class's visible (inherited) members instead of comparing
+ * `containingClass`.
  */
 object WildcardImportExpander {
     private val logger = thisLogger().withStdout()
 
-    data class Stats(val filesScanned: Int, val wildcardsExpanded: Int)
+    data class Stats(val filesScanned: Int, val wildcardsExpanded: Int, val wildcardsKept: Int)
 
     fun expandAll(project: Project): Stats {
         val scope = GlobalSearchScope.projectScope(project)
@@ -56,20 +63,36 @@ object WildcardImportExpander {
 
         var scanned = 0
         var expanded = 0
+        var kept = 0
         for (vf in files) {
             val psiFile = runBlocking { readAction { psiManager.findFile(vf) as? PsiJavaFile } } ?: continue
             scanned++
-            expanded += expandInFile(project, psiFile)
+            val (e, k) = expandInFile(project, psiFile)
+            expanded += e
+            kept += k
         }
-        logger.info("[WildcardImportExpander] Pre-processed $scanned files; expanded $expanded wildcard import(s)")
-        return Stats(scanned, expanded)
+        logger.info("[WildcardImportExpander] Pre-processed $scanned files; expanded $expanded wildcard import(s); kept $kept wildcard(s) as conservative")
+        return Stats(scanned, expanded, kept)
     }
 
-    private fun expandInFile(project: Project, psiFile: PsiJavaFile): Int {
+    /**
+     * Per-file static-reference summary built in a single PSI walk, so we can
+     * attribute names to multiple wildcards without re-walking.
+     */
+    private data class StaticRefSummary(
+        /** Names of unqualified references that resolved to some PsiMember. */
+        val resolvedNames: Set<String>,
+        /** Names of unqualified references whose resolution returned null. */
+        val unresolvedNames: Set<String>,
+    )
+
+    /** @return (expanded, kept) counters for the file. */
+    private fun expandInFile(project: Project, psiFile: PsiJavaFile): Pair<Int, Int> {
         data class Plan(
             val importList: PsiImportList,
             val staticWildcards: List<PsiImportStaticStatement>,
             val regularWildcards: List<PsiImportStatement>,
+            val staticSummary: StaticRefSummary,
         )
 
         val plan = runBlocking {
@@ -78,24 +101,82 @@ object WildcardImportExpander {
                 val statics = importList.importStaticStatements.filter { it.isOnDemand }.toList()
                 val regulars = importList.importStatements.filter { it.isOnDemand }.toList()
                 if (statics.isEmpty() && regulars.isEmpty()) null
-                else Plan(importList, statics, regulars)
+                else Plan(importList, statics, regulars, summarizeStaticRefs(psiFile))
             }
-        } ?: return 0
+        } ?: return 0 to 0
 
-        var count = 0
-        for (w in plan.staticWildcards) count += rewriteStaticWildcard(project, psiFile, plan.importList, w)
-        for (w in plan.regularWildcards) count += rewriteRegularWildcard(project, psiFile, plan.importList, w)
-        return count
+        var expanded = 0
+        var kept = 0
+        for (w in plan.staticWildcards) {
+            val (e, k) = rewriteStaticWildcard(project, plan.importList, w, plan.staticSummary)
+            expanded += e
+            kept += k
+        }
+        for (w in plan.regularWildcards) {
+            expanded += rewriteRegularWildcard(project, psiFile, plan.importList, w)
+        }
+        return expanded to kept
     }
 
+    /**
+     * Walk the file once. For every unqualified `PsiReferenceExpression`,
+     * record its name as either resolved (resolves to some `PsiMember`) or
+     * unresolved. Filtering per wildcard happens later by querying the target
+     * class's visible members.
+     */
+    private fun summarizeStaticRefs(psiFile: PsiJavaFile): StaticRefSummary {
+        val resolved = LinkedHashSet<String>()
+        val unresolved = LinkedHashSet<String>()
+        psiFile.accept(object : JavaRecursiveElementVisitor() {
+            override fun visitReferenceExpression(expr: PsiReferenceExpression) {
+                super.visitReferenceExpression(expr)
+                if (expr.qualifierExpression != null) return
+                val name = expr.referenceName ?: return
+                val target = expr.resolve()
+                when {
+                    target is PsiMember -> resolved.add(name)
+                    target == null -> unresolved.add(name)
+                }
+            }
+        })
+        return StaticRefSummary(resolved, unresolved)
+    }
+
+    /**
+     * Rewrite one static wildcard.
+     *
+     * @return (1, 0) on expansion, (0, 1) on conservative keep, (0, 0) on
+     *         unresolvable target (no change).
+     */
     private fun rewriteStaticWildcard(
         project: Project,
-        psiFile: PsiJavaFile,
         importList: PsiImportList,
         wildcard: PsiImportStaticStatement,
-    ): Int {
-        val targetClass = runBlocking { readAction { wildcard.resolveTargetClass() } } ?: return 0
-        val usedNames = runBlocking { readAction { collectStaticUses(psiFile, targetClass) } }
+        summary: StaticRefSummary,
+    ): Pair<Int, Int> {
+        val targetClass = runBlocking { readAction { wildcard.resolveTargetClass() } } ?: return 0 to 0
+
+        // Names that target class exposes (incl. inherited) that are referenced
+        // in this file. Same name may also be exposed by another wildcard's
+        // target class — that's correct, we record it for both.
+        val usedNames = runBlocking {
+            readAction {
+                summary.resolvedNames.filter { name -> targetClassExposes(targetClass, name) }
+            }
+        }
+
+        // Conservative keep: if any unresolved reference matches a name this
+        // target class would expose, the wildcard might be load-bearing for
+        // a name PSI couldn't bind right now. Don't delete it.
+        val coversUnresolved = runBlocking {
+            readAction {
+                summary.unresolvedNames.any { name -> targetClassExposes(targetClass, name) }
+            }
+        }
+
+        if (usedNames.isEmpty() && coversUnresolved) {
+            return 0 to 1
+        }
 
         ApplicationManager.getApplication().invokeAndWait {
             WriteCommandAction.runWriteCommandAction(project) {
@@ -107,7 +188,19 @@ object WildcardImportExpander {
                 wildcard.delete()
             }
         }
-        return 1
+        return 1 to 0
+    }
+
+    /**
+     * Does `targetClass` expose a static member with this simple name through
+     * its visible (inherited) members? Methods, fields, and inner classes all
+     * count as importable via `import static X.*;`.
+     */
+    private fun targetClassExposes(targetClass: PsiClass, name: String): Boolean {
+        if (targetClass.findMethodsByName(name, /* checkBases = */ true).isNotEmpty()) return true
+        if (targetClass.findFieldByName(name, /* checkBases = */ true) != null) return true
+        if (targetClass.findInnerClassByName(name, /* checkBases = */ true) != null) return true
+        return false
     }
 
     private fun rewriteRegularWildcard(
@@ -130,21 +223,6 @@ object WildcardImportExpander {
             }
         }
         return 1
-    }
-
-    private fun collectStaticUses(psiFile: PsiJavaFile, targetClass: PsiClass): Set<String> {
-        val names = LinkedHashSet<String>()
-        psiFile.accept(object : JavaRecursiveElementVisitor() {
-            override fun visitReferenceExpression(expr: PsiReferenceExpression) {
-                super.visitReferenceExpression(expr)
-                if (expr.qualifierExpression != null) return
-                val resolved = expr.resolve()
-                if (resolved is PsiMember && resolved.containingClass == targetClass) {
-                    expr.referenceName?.let { names.add(it) }
-                }
-            }
-        })
-        return names
     }
 
     private fun collectClassUses(psiFile: PsiJavaFile, pkg: PsiPackage): Set<PsiClass> {
