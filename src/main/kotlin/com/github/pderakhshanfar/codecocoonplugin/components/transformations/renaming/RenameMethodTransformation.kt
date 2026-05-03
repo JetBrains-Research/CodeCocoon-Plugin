@@ -14,8 +14,10 @@ import com.github.pderakhshanfar.codecocoonplugin.java.JavaTransformation
 import com.github.pderakhshanfar.codecocoonplugin.memory.Memory
 import com.github.pderakhshanfar.codecocoonplugin.memory.PsiSignatureGenerator
 import com.github.pderakhshanfar.codecocoonplugin.transformation.requireOrDefault
+import com.intellij.ide.highlighter.JavaFileType
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.readAction
+import com.intellij.openapi.command.WriteCommandAction
 import com.intellij.openapi.diagnostic.thisLogger
 import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.progress.ProcessCanceledException
@@ -23,6 +25,8 @@ import com.intellij.openapi.project.Project
 import com.intellij.openapi.roots.ProjectFileIndex
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.psi.*
+import com.intellij.psi.search.FileTypeIndex
+import com.intellij.psi.search.GlobalSearchScope
 import com.intellij.psi.search.searches.ReferencesSearch
 import com.intellij.refactoring.rename.RenameProcessor
 import kotlinx.coroutines.runBlocking
@@ -431,6 +435,20 @@ class RenameMethodTransformation(
                 // produced non-deterministic import positions across morph runs.
                 PsiDocumentManager.getInstance(project).commitAllDocuments()
                 FileDocumentManager.getInstance().saveAllDocuments()
+
+                // Safety net: in multi-module projects with same-simple-name classes
+                // (e.g. fastjson v1-compat `com.alibaba.fastjson.JSON` alongside v2
+                // `com.alibaba.fastjson2.JSON`), MethodReferencesSearch's strict
+                // signature match can drop call sites whose overload resolution PSI
+                // can't disambiguate. RenameProcessor.findUsages() then never sees
+                // them and they survive the rename with the old method name. Walk
+                // the project once and patch any remaining sites that resolve to
+                // this family or whose qualifier resolves to its containing class.
+                val patched = verifyAndPatchMissedCallSites(project, methods, oldName, newName)
+                if (patched > 0) {
+                    PsiDocumentManager.getInstance(project).commitAllDocuments()
+                    FileDocumentManager.getInstance().saveAllDocuments()
+                }
             }
 
             val overloadLabel = if (methods.size > 1) "${methods.size} overloads" else "1 overload"
@@ -446,6 +464,76 @@ class RenameMethodTransformation(
             logger.info("          ⊘ Skipped family `$familyName`:\n      (Reason: ${e.message})")
             null
         }
+    }
+
+    /**
+     * Post-rename safety net for [tryRenameMethodFamily]. Catches call sites that
+     * `RenameProcessor.findUsages()` failed to attribute to the family — observed in
+     * multi-module projects where another class shares the simple name and PSI's
+     * overload resolver can't unambiguously bind the call to a specific overload
+     * (e.g. v1-compat `com.alibaba.fastjson.JSON` vs v2 `com.alibaba.fastjson2.JSON`).
+     *
+     * Walks every Java file in project scope. Patches a call site only when:
+     *   1. it resolves to a method that is in the family, OR
+     *   2. its resolution returned null AND its qualifier resolves to the family's
+     *      containing class — i.e. exactly the broken case we're patching, never
+     *      a call PSI can attribute to a different method.
+     *
+     * Must be invoked inside the same `invokeAndWait` envelope as the corresponding
+     * `RenameProcessor.run()` so PSI/document state is consistent. Returns the
+     * number of sites rewritten; 0 means PSI search already covered everything.
+     */
+    private fun verifyAndPatchMissedCallSites(
+        project: Project,
+        family: List<PsiMethod>,
+        oldName: String,
+        newName: String,
+    ): Int {
+        val containingClass = family.firstOrNull()?.containingClass ?: return 0
+        val containingFqn = containingClass.qualifiedName ?: return 0
+        val familySet = family.toSet()
+
+        val scope = GlobalSearchScope.projectScope(project)
+        val files = FileTypeIndex.getFiles(JavaFileType.INSTANCE, scope)
+        val psiManager = PsiManager.getInstance(project)
+        val factory = JavaPsiFacade.getElementFactory(project)
+
+        val toPatch = mutableListOf<PsiIdentifier>()
+        for (vf in files) {
+            val psiFile = psiManager.findFile(vf) as? PsiJavaFile ?: continue
+            psiFile.accept(object : JavaRecursiveElementVisitor() {
+                override fun visitMethodCallExpression(expr: PsiMethodCallExpression) {
+                    super.visitMethodCallExpression(expr)
+                    val refExpr = expr.methodExpression
+                    if (refExpr.referenceName != oldName) return
+
+                    val resolved = expr.resolveMethod()
+                    val resolvesToFamily = resolved != null && resolved in familySet
+
+                    val qualifier = refExpr.qualifierExpression as? PsiReferenceExpression
+                    val qualifierClass = qualifier?.resolve() as? PsiClass
+                    val qualifierMatchesContainingClass =
+                        qualifierClass?.qualifiedName == containingFqn
+
+                    if (resolvesToFamily || (resolved == null && qualifierMatchesContainingClass)) {
+                        val id = refExpr.referenceNameElement
+                        if (id is PsiIdentifier) toPatch.add(id)
+                    }
+                }
+            })
+        }
+
+        if (toPatch.isEmpty()) return 0
+
+        WriteCommandAction.runWriteCommandAction(project) {
+            for (id in toPatch) {
+                if (!id.isValid) continue
+                val newId = factory.createIdentifier(newName)
+                id.replace(newId)
+            }
+        }
+        logger.info("          ↳ Post-rename safety net: patched ${toPatch.size} missed call site(s) for `$oldName` → `$newName`")
+        return toPatch.size
     }
 
     /**
