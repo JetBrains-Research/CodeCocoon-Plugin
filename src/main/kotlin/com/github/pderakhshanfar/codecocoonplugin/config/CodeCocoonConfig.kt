@@ -13,8 +13,8 @@ import com.intellij.openapi.vfs.VirtualFile
      val files: List<String> = emptyList(),
     /** Ordered list of transformations to execute */
      val transformations: List<TransformationConfig> = emptyList(),
-    /** Directory where memory files are stored (resolved to absolute path by ConfigLoader) */
-     val memoryDir: String,
+    /** Full path to the memory JSON file (resolved to absolute path by ConfigLoader) */
+     val memoryFilepath: String,
  )
 
  /**
