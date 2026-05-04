@@ -31,6 +31,8 @@ import com.intellij.util.containers.MultiMap
 import kotlinx.coroutines.runBlocking
 import java.nio.file.Paths
 import java.util.concurrent.CompletableFuture
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.TimeoutException
 import kotlin.collections.iterator
 
 
@@ -277,8 +279,15 @@ class MoveFileIntoSuggestedDirectoryTransformation private constructor(
             }
 
             // finish when moved successfully into the current suggestion
-            logger.info("    ↳ Awaiting completion of move operation (i.e., `successfullyMoved.join()`)...")
-            val moveResult = successfullyMoved.join()
+            logger.info("    ↳ Awaiting completion of move operation (i.e., `successfullyMoved.get(3min)`)...")
+
+            val moveResult = try {
+                successfullyMoved.get(3, TimeUnit.MINUTES)
+            } catch (_: TimeoutException) {
+                logger.warn("    ⚠️ [TIMEOUT] Suggestion #${index + 1} for '$filename' timed out after 3 minutes; moving on to next suggestion")
+                false
+            }
+
             logger.info("    ↳ Move operation for suggestion #${index + 1} for '$filename' ${if (moveResult) "succeeded" else "failed"}: '$suggestedDirectory'")
             if (moveResult) {
                 val (filesModified, usageSummary) = withReadAction {
