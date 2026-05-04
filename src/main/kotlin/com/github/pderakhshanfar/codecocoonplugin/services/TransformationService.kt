@@ -7,7 +7,6 @@ import com.github.pderakhshanfar.codecocoonplugin.components.executor.IntelliJTr
 import com.github.pderakhshanfar.codecocoonplugin.config.CodeCocoonConfig
 import com.github.pderakhshanfar.codecocoonplugin.executor.TransformationResult
 import com.github.pderakhshanfar.codecocoonplugin.intellij.logging.withStdout
-import com.github.pderakhshanfar.codecocoonplugin.intellij.psi.WildcardImportExpander
 import com.github.pderakhshanfar.codecocoonplugin.intellij.vfs.findVirtualFile
 import com.github.pderakhshanfar.codecocoonplugin.intellij.vfs.relativeToRootOrAbsPath
 import com.github.pderakhshanfar.codecocoonplugin.memory.PersistentMemory
