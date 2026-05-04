@@ -13,6 +13,7 @@ import ai.koog.prompt.llm.LLModel
 import ai.koog.rag.base.files.JVMFileSystemProvider
 import com.github.pderakhshanfar.codecocoonplugin.common.LLM
 import com.intellij.openapi.diagnostic.thisLogger
+import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
@@ -50,6 +51,7 @@ data class HunkSpec(
     @SerialName("removed_wildcards") val removedWildcards: List<String>? = null,
 )
 
+@OptIn(ExperimentalSerializationApi::class)
 private val agentJson = Json {
     prettyPrint = true
     encodeDefaults = false
