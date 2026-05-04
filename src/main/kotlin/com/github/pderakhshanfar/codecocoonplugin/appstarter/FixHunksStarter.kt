@@ -75,8 +75,11 @@ class FixHunksStarter : ApplicationStarter {
         }
 
         val batches = input.hunks.chunked(batchSize)
+        val typeCounts = input.hunks.groupingBy { it.hunkType }.eachCount()
         logger.info("[FixHunks] Reverting ${input.hunks.size} hunks across ${batches.size} batch(es) of <= $batchSize")
         logger.info("[FixHunks] Repo root: ${repoRoot.absolutePath}")
+        logger.info("[FixHunks] Patch label: ${input.patchLabel.ifEmpty { "<none>" }}")
+        logger.info("[FixHunks] Hunk types: $typeCounts")
         logger.info("[FixHunks] Description: ${input.description}")
 
         var failedBatches = 0

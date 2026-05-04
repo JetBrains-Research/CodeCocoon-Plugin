@@ -26,6 +26,12 @@ data class FixHunksInput(
 )
 
 @Serializable
+data class ImportLine(
+    val line: Int,
+    @SerialName("import") val importStmt: String,
+)
+
+@Serializable
 data class HunkSpec(
     val file: String,
     @SerialName("hunk_type") val hunkType: String,
@@ -37,8 +43,10 @@ data class HunkSpec(
     @SerialName("new_line_count") val newLineCount: Int = 0,
     val action: String = "",
     @SerialName("full_hunk_diff") val fullHunkDiff: String = "",
-    @SerialName("original_order") val originalOrder: List<String>? = null,
-    @SerialName("reordered_to") val reorderedTo: List<String>? = null,
+    // Present only when hunk_type == "import_reorder":
+    @SerialName("original_import_block") val originalImportBlock: List<ImportLine>? = null,
+    @SerialName("current_import_block") val currentImportBlock: List<ImportLine>? = null,
+    // Present only when hunk_type == "wildcard_import_removal":
     @SerialName("removed_wildcards") val removedWildcards: List<String>? = null,
 )
 
@@ -91,30 +99,71 @@ suspend fun runImportHunkFixerAgent(
 
 private fun buildSystemPrompt(repoRoot: String): String = """
     You are a precise code-editing agent. Your ONLY job is to revert specific
-    unwanted modifications that an automated refactoring tool introduced into
-    Java source files. You must minimize the diff: revert ONLY what each hunk
-    describes, and nothing else.
+    unwanted modifications that an automated refactoring tool (IntelliJ's
+    import optimizer) introduced into Java source files. You must minimize
+    the diff: revert ONLY what each hunk describes, and nothing else.
 
     REPO ROOT: $repoRoot
 
+    INPUT SCHEMA — fields you will receive per hunk:
+      Common to every hunk:
+        • file               — repo-relative path to the Java source file.
+        • hunk_type          — "import_reorder" or "wildcard_import_removal".
+        • description        — human-readable explanation of this specific hunk.
+        • hunk_header        — the raw `@@ -a,b +c,d @@` header from the diff.
+        • old_start_line / old_line_count   — window in the ORIGINAL file.
+        • new_start_line / new_line_count   — window in the CURRENT file
+                                              (where to look NOW).
+        • action             — one-sentence imperative instruction.
+        • full_hunk_diff     — the complete unified-diff hunk (context).
+      For hunk_type == "import_reorder" ONLY:
+        • original_import_block — list of {line, import} entries showing the
+                                  imports in the order they had BEFORE the
+                                  optimizer ran (the desired post-revert
+                                  order). The "line" field is the absolute
+                                  1-indexed line number in the original file.
+        • current_import_block  — list of {line, import} entries showing the
+                                  SAME imports as they appear NOW in the
+                                  file. The set of `import` strings is
+                                  identical to original_import_block — only
+                                  the ORDER differs.
+      For hunk_type == "wildcard_import_removal" ONLY:
+        • removed_wildcards  — list of wildcard import statements (verbatim,
+                              including `import` keyword and trailing `;`)
+                              that the optimizer DELETED and that you must
+                              ADD BACK.
+
     ALLOWED CHANGES (per hunk):
       • hunk_type = "import_reorder":
-          Reorder the import statements inside the file's import block so they
-          appear in the SAME ORDER as `original_order`. Do NOT add, remove, or
-          rewrite any import line — only reorder lines that are already there.
-          The set of import lines AFTER your edit must equal the set BEFORE.
+          Reorder the lines in the file's import block so that the imports
+          appear in the SAME ORDER as `original_import_block` (top → bottom).
+          The SET of import lines AFTER your edit MUST equal the SET BEFORE
+          (same imports, just reordered). Preserve any blank lines that
+          separate sub-groups in the current block exactly.
       • hunk_type = "wildcard_import_removal":
-          Restore the wildcard import lines from `removed_wildcards`, and
-          delete the consecutive single-class imports that those wildcards
-          subsume (these are the lines marked '+' in `full_hunk_diff` whose
-          package matches a restored wildcard's package, e.g. lines starting
-          with `import a.b.X;` for a restored `import a.b.*;`).
+          Add each line in `removed_wildcards` back into the file's import
+          section. Do NOT remove or modify any other import. Place the
+          restored wildcard at the location implied by `full_hunk_diff` and
+          `new_start_line` (typically the same relative position it had in
+          the original — e.g. as a separate static-imports group at the end
+          of the import block, with a preceding blank line if the diff
+          shows one). If the diff is ambiguous, prefer placing it at the
+          end of the import block.
+
+    DO NOT TOUCH OTHER CHANGES IN `full_hunk_diff`:
+      The `full_hunk_diff` may contain unrelated `+`/`-` lines from other
+      transformations (e.g. a class rename like `JSON` → `JsonMapper`).
+      Those are intentional and must STAY. Restrict your edit strictly to
+      the field that describes your hunk type:
+        - For import_reorder: only the imports in original_import_block /
+          current_import_block.
+        - For wildcard_import_removal: only the lines in removed_wildcards.
 
     FORBIDDEN CHANGES — MUST NEVER HAPPEN:
       • Do not modify code outside the import block.
-      • Do not add, delete, rename, or reformat classes, methods, fields, or
-        comments.
-      • Do not change whitespace outside the lines you reorder/replace.
+      • Do not add, delete, rename, or reformat classes, methods, fields,
+        comments, javadoc, or annotations.
+      • Do not change whitespace outside the lines you reorder/insert.
       • Do not run any git command. Do not stage, commit, push, or branch.
       • Do not invoke any tool other than list_directory, read_file, edit_file.
       • Do not edit files that are not listed in the user prompt.
@@ -125,21 +174,27 @@ private fun buildSystemPrompt(repoRoot: String): String = """
       2. Read the file. Locate the import block near `new_start_line`
          (lines are 1-indexed; the block may have shifted by a few lines).
       3. Compute the minimal edit:
-           - For import_reorder: build the replacement block by taking the
-             CURRENT import lines (with their existing whitespace) and
-             reordering them to match `original_order`. The set of lines
-             must be IDENTICAL — only their order changes.
-           - For wildcard_import_removal: form the replacement by inserting
-             the wildcard lines from `removed_wildcards` (in the order they
-             appear in `original_order` if provided, otherwise as given) and
-             removing each single-class import they subsume.
+           - For import_reorder:
+               • Confirm that the set of imports currently present matches
+                 `current_import_block`. (If not, the file has drifted —
+                 still attempt the reorder using whatever imports are there
+                 that also appear in `original_import_block`.)
+               • Build the replacement block by listing the imports in the
+                 order of `original_import_block`. Preserve any blank
+                 separator lines you observed in the current block at the
+                 SAME positions (e.g., a blank line before the static
+                 imports section).
+           - For wildcard_import_removal:
+               • Insert each wildcard from `removed_wildcards` into the
+                 current import block at the right position. Do NOT remove
+                 any other import line.
       4. Use edit_file with `original` = the exact current import block
          snippet (multiple consecutive lines, copied verbatim from the
          file you just read) and `replacement` = the corrected block. Keep
          a one- or two-line anchor of unchanged context (the package line
-         above and a blank line below) byte-for-byte identical inside both
-         `original` and `replacement` so that the edit is unambiguous and
-         proves you changed nothing else.
+         above and the blank line below the import block) byte-for-byte
+         identical inside both `original` and `replacement` so the edit is
+         unambiguous and proves you changed nothing else.
       5. After editing, read the file back and verify that ONLY import-block
          lines differ from your mental model of the pre-edit content. If
          anything else changed, fix it with another edit_file call.
@@ -172,7 +227,10 @@ private fun buildUserPrompt(
     batchDescription: String,
     hunks: List<HunkSpec>,
 ): String {
-    val hunksJson = agentJson.encodeToString(kotlinx.serialization.builtins.ListSerializer(HunkSpec.serializer()), hunks)
+    val hunksJson = agentJson.encodeToString(
+        kotlinx.serialization.builtins.ListSerializer(HunkSpec.serializer()),
+        hunks,
+    )
     return """
         BATCH DESCRIPTION: $batchDescription
         REPO ROOT: $repoRoot
@@ -184,9 +242,16 @@ private fun buildUserPrompt(
 
         For each hunk:
           • Resolve the file as $repoRoot/<file>.
-          • Read it, find the import block, and apply the minimal edit by
-            calling edit_file NOW, in this same run.
+          • Read it, find the import block near `new_start_line`, and apply
+            the minimal edit by calling edit_file NOW, in this same run.
+          • For "import_reorder": reorder current imports to match
+            `original_import_block` (set of imports unchanged).
+          • For "wildcard_import_removal": insert every line from
+            `removed_wildcards` into the import block; do not remove or
+            modify any other import.
           • Use list_directory only if read_file cannot find the file.
+          • Ignore unrelated `+`/`-` lines in `full_hunk_diff` — they are
+            from other transformations and must stay.
 
         Do NOT respond with a plan and stop. Do NOT ask for confirmation
         ("Shall I proceed?", "Ready to apply?", etc.) — there is no human
