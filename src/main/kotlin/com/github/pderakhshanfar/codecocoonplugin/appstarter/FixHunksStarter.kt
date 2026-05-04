@@ -120,7 +120,7 @@ class FixHunksStarter : ApplicationStarter {
     }
 
     companion object {
-        private const val DEFAULT_BATCH_SIZE = 5
-        private const val DEFAULT_MAX_AGENT_ITERATIONS = 60
+        private const val DEFAULT_BATCH_SIZE = 8
+        private const val DEFAULT_MAX_AGENT_ITERATIONS = 70
     }
 }
