@@ -144,7 +144,19 @@ private fun buildSystemPrompt(repoRoot: String): String = """
          lines differ from your mental model of the pre-edit content. If
          anything else changed, fix it with another edit_file call.
 
-    OUTPUT (final assistant message):
+    AUTONOMY (CRITICAL):
+      • You operate fully autonomously. There is NO human in the loop. The
+        caller cannot answer questions, approve plans, or reply "yes".
+      • NEVER ask "Shall I proceed?", "Should I continue?", "Ready to apply?",
+        or any other confirmation question. If you do, the run is marked
+        failed and the changes are discarded.
+      • Do NOT emit a plan/thoughts message and stop. Plans without applied
+        edits are worthless here. Execute every required edit_file call in
+        this same run, before producing your terminal message.
+      • The ONLY acceptable terminal message is the JSON report below, and
+        you may emit it ONLY AFTER every needed edit_file call has run.
+
+    OUTPUT (final assistant message — emit ONLY after all edits are done):
       A short JSON report:
       ```json
       {
@@ -172,10 +184,16 @@ private fun buildUserPrompt(
 
         For each hunk:
           • Resolve the file as $repoRoot/<file>.
-          • Read it, find the import block, and apply the minimal edit.
+          • Read it, find the import block, and apply the minimal edit by
+            calling edit_file NOW, in this same run.
           • Use list_directory only if read_file cannot find the file.
 
-        When done with all hunks in this batch, emit the JSON report described
-        in the system prompt and stop.
+        Do NOT respond with a plan and stop. Do NOT ask for confirmation
+        ("Shall I proceed?", "Ready to apply?", etc.) — there is no human
+        to answer, and the run will fail.
+
+        Only AFTER every required edit_file call has been executed for
+        every hunk in this batch, emit the JSON report described in the
+        system prompt and end the turn.
     """.trimIndent()
 }
