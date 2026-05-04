@@ -258,6 +258,31 @@ intellijPlatformTesting {
             }
         }
 
+        // Custom task for reverting unwanted import-hunks via a Koog agent.
+        // Reads a hunks JSON file (repo_root + list of import_reorder /
+        // wildcard_import_removal hunks) and runs an agent that surgically
+        // reverts each hunk in the corresponding Java source file.
+        // Usage: ./gradlew agentFixHunks -Pinput=/abs/path/to/hunks.json
+        //        [-PbatchSize=5] [-PmaxAgentIterations=60]
+        register("agentFixHunks") {
+            task {
+                args(listOf("agent-fix-hunks"))
+
+                val inputFile = project.findProperty("input") as? String ?: ""
+                val batchSize = project.findProperty("batchSize") as? String ?: ""
+                val maxAgentIterations = project.findProperty("maxAgentIterations") as? String ?: ""
+
+                jvmArgs(
+                    "-Xmx4G",
+                    "-Djava.awt.headless=true",
+                    "--add-exports", "java.base/jdk.internal.vm=ALL-UNNAMED",
+                    "-Dfix.inputFile=${inputFile}",
+                    "-Dfix.batchSize=${batchSize}",
+                    "-Dfix.maxAgentIterations=${maxAgentIterations}",
+                )
+            }
+        }
+
         // Custom task for paraphrasing benchmark-record texts (semantic-preserving rewrite).
         // Reads a benchmark-record JSON file, paraphrases each {title, body} block,
         // and writes a same-schema JSON file.
