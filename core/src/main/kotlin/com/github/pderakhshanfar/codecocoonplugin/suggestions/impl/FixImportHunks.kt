@@ -36,6 +36,7 @@ data class ImportLine(
 
 @Serializable
 data class HunkSpec(
+    val id: String = "",
     val file: String,
     @SerialName("hunk_type") val hunkType: String,
     val description: String = "",
@@ -66,6 +67,23 @@ private val agentJson = Json {
     explicitNulls = false
 }
 
+/**
+ * Outcome of a single agent batch invocation.
+ *
+ * @property agentReport the agent's terminal message (advisory; not source of truth)
+ * @property verifications per-hunk filesystem verification results, in the same order as the input hunks
+ * @property error null on success; an exception describing the agent-level failure (e.g. iteration cap, network)
+ *                 The verifications list is still the per-hunk source of truth even when this is non-null.
+ */
+data class FixBatchResult(
+    val agentReport: String?,
+    val verifications: List<VerifyResult>,
+    val error: Throwable? = null,
+) {
+    val appliedHunkIds: List<String> get() = verifications.filter { it.applied }.map { it.hunkId }.filter { it.isNotEmpty() }
+    val isFullySuccessful: Boolean get() = error == null && verifications.all { it.applied }
+}
+
 suspend fun runImportHunkFixerAgent(
     token: String,
     model: LLModel,
@@ -73,7 +91,7 @@ suspend fun runImportHunkFixerAgent(
     batchDescription: String,
     hunks: List<HunkSpec>,
     maxAgentIterations: Int = 60,
-): Result<String> {
+): FixBatchResult {
     val executor = LLM.createGrazieExecutor(token)
 
     val agent = AIAgent(
@@ -122,25 +140,24 @@ suspend fun runImportHunkFixerAgent(
         runCatching { rel to File(repoRoot, rel).readText() }.getOrNull()
     }.toMap()
 
-    val agentReport = runCatching {
+    val agentRun = runCatching {
         agent.run(agentInput = buildUserPrompt(repoRoot, batchDescription, hunks))
-    }.getOrElse {
-        return Result.failure(it)
     }
+    val agentReport = agentRun.getOrNull()
+    val agentError = agentRun.exceptionOrNull()
 
+    // Verify regardless of whether the agent threw — partial successes count.
     val verifications = hunks.map { verifyHunkApplied(repoRoot, it, crossMoveBefore) }
+    return FixBatchResult(agentReport = agentReport, verifications = verifications, error = agentError)
+}
+
+/** Renders the unapplied hunks as a multi-line summary suitable for logging. */
+fun FixBatchResult.unappliedSummary(): String {
     val unapplied = verifications.filterNot { it.applied }
-    return if (unapplied.isEmpty()) {
-        Result.success(agentReport)
-    } else {
-        val summary = unapplied.joinToString("\n  - ") { "${it.file} [${it.hunkType}]: ${it.reason}" }
-        Result.failure(
-            IllegalStateException(
-                "Filesystem verification rejected the agent's report. " +
-                "${unapplied.size}/${hunks.size} hunk(s) NOT applied:\n  - $summary\n" +
-                "Agent's own report (advisory):\n$agentReport"
-            )
-        )
+    if (unapplied.isEmpty()) return "all hunks verified applied"
+    return unapplied.joinToString("\n  - ", prefix = "  - ") {
+        val tag = if (it.hunkId.isNotEmpty()) "${it.hunkId} " else ""
+        "$tag${it.file} [${it.hunkType}]: ${it.reason}"
     }
 }
 
@@ -158,6 +175,7 @@ private fun logBoth(message: String) {
  * The agent's own `applied: true` claim is advisory; this is the source of truth.
  */
 data class VerifyResult(
+    val hunkId: String,
     val file: String,
     val hunkType: String,
     val applied: Boolean,
@@ -182,12 +200,12 @@ private fun verifyHunkApplied(
 ): VerifyResult {
     val target = File(repoRoot, hunk.file)
     if (!target.isFile) {
-        return VerifyResult(hunk.file, hunk.hunkType, false, "file not found at $target")
+        return VerifyResult(hunk.id, hunk.file, hunk.hunkType, false, "file not found at $target")
     }
     val content = try {
         target.readText()
     } catch (e: Exception) {
-        return VerifyResult(hunk.file, hunk.hunkType, false, "could not read file: ${e.message}")
+        return VerifyResult(hunk.id, hunk.file, hunk.hunkType, false, "could not read file: ${e.message}")
     }
     val fileImports = content.lineSequence()
         .map { it.trim() }
@@ -198,20 +216,20 @@ private fun verifyHunkApplied(
         "import_reorder" -> verifyReorder(hunk, fileImports)
         "wildcard_import_removal" -> verifyWildcard(hunk, fileImports)
         "import_cross_hunk_move" -> verifyCrossHunkMove(hunk, fileImports, content, crossMoveBefore[hunk.file])
-        else -> VerifyResult(hunk.file, hunk.hunkType, false, "unknown hunk_type: ${hunk.hunkType}")
+        else -> VerifyResult(hunk.id, hunk.file, hunk.hunkType, false, "unknown hunk_type: ${hunk.hunkType}")
     }
 }
 
 private fun verifyReorder(hunk: HunkSpec, fileImports: List<String>): VerifyResult {
     val target = hunk.originalImportBlock?.map { it.importStmt.trim() }
-        ?: return VerifyResult(hunk.file, hunk.hunkType, false, "missing originalImportBlock")
+        ?: return VerifyResult(hunk.id, hunk.file, hunk.hunkType, false, "missing originalImportBlock")
     val current = hunk.currentImportBlock?.map { it.importStmt.trim() } ?: emptyList()
 
     // Are all expected imports even present?
     val missing = target.filter { it !in fileImports }
     if (missing.isNotEmpty()) {
         return VerifyResult(
-            hunk.file, hunk.hunkType, false,
+            hunk.id, hunk.file, hunk.hunkType, false,
             "imports missing from file: ${missing.joinToString(", ")}",
         )
     }
@@ -222,15 +240,15 @@ private fun verifyReorder(hunk: HunkSpec, fileImports: List<String>): VerifyResu
     val filtered = fileImports.filter { it in targetSet }
 
     return if (filtered == target) {
-        VerifyResult(hunk.file, hunk.hunkType, true, "imports in target order")
+        VerifyResult(hunk.id, hunk.file, hunk.hunkType, true, "imports in target order")
     } else if (current.isNotEmpty() && filtered == current) {
         VerifyResult(
-            hunk.file, hunk.hunkType, false,
+            hunk.id, hunk.file, hunk.hunkType, false,
             "imports still in pre-revert order; agent did not edit the file",
         )
     } else {
         VerifyResult(
-            hunk.file, hunk.hunkType, false,
+            hunk.id, hunk.file, hunk.hunkType, false,
             "imports in unexpected order: $filtered (expected $target)",
         )
     }
@@ -240,13 +258,13 @@ private fun verifyWildcard(hunk: HunkSpec, fileImports: List<String>): VerifyRes
     val expected = hunk.removedWildcards
         ?.filter { it.isNotEmpty() }       // skip blank-separator markers
         ?.map { it.trim() }
-        ?: return VerifyResult(hunk.file, hunk.hunkType, false, "missing removedWildcards")
+        ?: return VerifyResult(hunk.id, hunk.file, hunk.hunkType, false, "missing removedWildcards")
     val missing = expected.filter { it !in fileImports }
     return if (missing.isEmpty()) {
-        VerifyResult(hunk.file, hunk.hunkType, true, "wildcards present: ${expected.joinToString(", ")}")
+        VerifyResult(hunk.id, hunk.file, hunk.hunkType, true, "wildcards present: ${expected.joinToString(", ")}")
     } else {
         VerifyResult(
-            hunk.file, hunk.hunkType, false,
+            hunk.id, hunk.file, hunk.hunkType, false,
             "wildcards still missing from file: ${missing.joinToString(", ")}",
         )
     }
@@ -274,9 +292,9 @@ private fun verifyCrossHunkMove(
     beforeContent: String?,
 ): VerifyResult {
     val moved = hunk.movedImports?.map { it.trim() }
-        ?: return VerifyResult(hunk.file, hunk.hunkType, false, "missing movedImports")
+        ?: return VerifyResult(hunk.id, hunk.file, hunk.hunkType, false, "missing movedImports")
     val role = hunk.crossMoveRole
-        ?: return VerifyResult(hunk.file, hunk.hunkType, false, "missing crossMoveRole")
+        ?: return VerifyResult(hunk.id, hunk.file, hunk.hunkType, false, "missing crossMoveRole")
 
     val fileChanged = beforeContent != null && fileContent != beforeContent
     val snapshotMissing = beforeContent == null
@@ -285,10 +303,10 @@ private fun verifyCrossHunkMove(
         "missing_import" -> {
             val missing = moved.filter { it !in fileImports }
             if (missing.isEmpty()) {
-                VerifyResult(hunk.file, hunk.hunkType, true, "moved imports restored: ${moved.joinToString(", ")}")
+                VerifyResult(hunk.id, hunk.file, hunk.hunkType, true, "moved imports restored: ${moved.joinToString(", ")}")
             } else {
                 VerifyResult(
-                    hunk.file, hunk.hunkType, false,
+                    hunk.id, hunk.file, hunk.hunkType, false,
                     "moved imports still missing: ${missing.joinToString(", ")}",
                 )
             }
@@ -296,15 +314,15 @@ private fun verifyCrossHunkMove(
         "spurious_addition" -> {
             when {
                 snapshotMissing -> VerifyResult(
-                    hunk.file, hunk.hunkType, true,
+                    hunk.id, hunk.file, hunk.hunkType, true,
                     "no pre-run snapshot; spurious_addition cannot be falsified",
                 )
                 fileChanged -> VerifyResult(
-                    hunk.file, hunk.hunkType, true,
+                    hunk.id, hunk.file, hunk.hunkType, true,
                     "file changed (rotation applied)",
                 )
                 else -> VerifyResult(
-                    hunk.file, hunk.hunkType, false,
+                    hunk.id, hunk.file, hunk.hunkType, false,
                     "file unchanged since before agent run; rotation not applied",
                 )
             }
@@ -313,21 +331,21 @@ private fun verifyCrossHunkMove(
             val missing = moved.filter { it !in fileImports }
             when {
                 missing.isNotEmpty() -> VerifyResult(
-                    hunk.file, hunk.hunkType, false,
+                    hunk.id, hunk.file, hunk.hunkType, false,
                     "moved imports missing from file: ${missing.joinToString(", ")}",
                 )
                 snapshotMissing || fileChanged -> VerifyResult(
-                    hunk.file, hunk.hunkType, true,
+                    hunk.id, hunk.file, hunk.hunkType, true,
                     "moved imports present and file changed",
                 )
                 else -> VerifyResult(
-                    hunk.file, hunk.hunkType, false,
+                    hunk.id, hunk.file, hunk.hunkType, false,
                     "file unchanged since before agent run; rotation not applied",
                 )
             }
         }
         else -> VerifyResult(
-            hunk.file, hunk.hunkType, false,
+            hunk.id, hunk.file, hunk.hunkType, false,
             "unknown cross_move_role: $role",
         )
     }

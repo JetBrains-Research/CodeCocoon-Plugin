@@ -269,6 +269,7 @@ intellijPlatformTesting {
                 args(listOf("agent-fix-hunks"))
 
                 val inputFile = project.findProperty("input") as? String ?: ""
+                val outputFile = project.findProperty("output") as? String ?: ""
                 val batchSize = project.findProperty("batchSize") as? String ?: ""
                 val maxAgentIterations = project.findProperty("maxAgentIterations") as? String ?: ""
 
@@ -277,6 +278,7 @@ intellijPlatformTesting {
                     "-Djava.awt.headless=true",
                     "--add-exports", "java.base/jdk.internal.vm=ALL-UNNAMED",
                     "-Dfix.inputFile=${inputFile}",
+                    "-Dfix.outputFile=${outputFile}",
                     "-Dfix.batchSize=${batchSize}",
                     "-Dfix.maxAgentIterations=${maxAgentIterations}",
                 )
