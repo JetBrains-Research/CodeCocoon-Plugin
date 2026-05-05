@@ -24,6 +24,7 @@ import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.psi.*
 import com.intellij.psi.util.PsiTreeUtil
 import com.intellij.refactoring.rename.RenameProcessor
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.Serializable
 
@@ -311,6 +312,41 @@ class RenameVariableTransformation(
     ): List<VariableRenaming> {
         if (variables.isEmpty()) return emptyList()
 
+        // Split variables into chunks so a single transient LLM failure (timeout,
+        // malformed JSON, token-budget overflow on huge files) doesn't lose the
+        // suggestions for the entire file. Files with <= LLM_BATCH_SIZE variables
+        // still produce one LLM call, matching the prior single-call behaviour.
+        val batches = variables.chunked(LLM_BATCH_SIZE)
+        if (batches.size > 1) {
+            logger.info("  ↳ Splitting ${variables.size} variables into ${batches.size} LLM batches of up to $LLM_BATCH_SIZE")
+        }
+
+        val combined = mutableListOf<VariableRenaming>()
+        for ((index, batch) in batches.withIndex()) {
+            val partial = generateBatchWithRetry(
+                variables = batch,
+                count = count,
+                batchLabel = "${index + 1}/${batches.size}",
+            )
+            combined.addAll(partial)
+        }
+        return combined
+    }
+
+    /**
+     * Calls the LLM for a single batch of variables, retrying transient errors
+     * with exponential backoff. Returns an empty list if every retry fails — the
+     * caller's per-variable loop then skips those variables (no rename, no memory
+     * write) instead of failing the whole transformation, so other batches and
+     * other files still progress.
+     *
+     * Rethrows [ProcessCanceledException] per IntelliJ contract.
+     */
+    private suspend fun generateBatchWithRetry(
+        variables: List<PsiVariable>,
+        count: Int,
+        batchLabel: String,
+    ): List<VariableRenaming> {
         val contexts = readAction { variables.map { buildVariableContext(it) } }
 
         val varRenamePrompt = prompt("variable-rename-batch-prompt") {
@@ -341,13 +377,31 @@ class RenameVariableTransformation(
             }
         }
 
-
         val llm = LLM.fromGrazie(OpenAIModels.Chat.GPT5Mini)
-        val result = llm.structuredRequest<VariableRenameSuggestions>(
-            prompt = varRenamePrompt
-        )
 
-        return result?.renamings ?: emptyList()
+        var lastError: Throwable? = null
+        for (attempt in 1..LLM_MAX_ATTEMPTS) {
+            try {
+                val result = llm.structuredRequest<VariableRenameSuggestions>(prompt = varRenamePrompt)
+                return result?.renamings ?: emptyList()
+            } catch (e: ProcessCanceledException) {
+                throw e
+            } catch (e: Exception) {
+                lastError = e
+                logger.warn("    ⚠ LLM call for variable batch $batchLabel failed (attempt $attempt/$LLM_MAX_ATTEMPTS): ${e.message}")
+                if (attempt < LLM_MAX_ATTEMPTS) {
+                    delay(retryBackoffMillis(attempt))
+                }
+            }
+        }
+        logger.warn("    ✗ LLM call for variable batch $batchLabel exhausted $LLM_MAX_ATTEMPTS attempts; skipping batch (last error: ${lastError?.message})")
+        return emptyList()
+    }
+
+    private fun retryBackoffMillis(attempt: Int): Long {
+        // 1s, 2s, 4s, ... capped at LLM_RETRY_BACKOFF_CAP_MILLIS
+        val base = LLM_RETRY_BACKOFF_BASE_MILLIS shl (attempt - 1).coerceAtLeast(0)
+        return base.coerceAtMost(LLM_RETRY_BACKOFF_CAP_MILLIS)
     }
 
     private fun tryRenameVariableAndUsages(
@@ -535,6 +589,16 @@ class RenameVariableTransformation(
     companion object {
         const val ID = "rename-variable-transformation"
         private const val DEFAULT_SUGGESTED_NAMES_SIZE = 3
+
+        // Robustness knobs for the LLM batch call.
+        // LLM_BATCH_SIZE chosen so files with up to a few dozen variables still
+        // produce one call (preserving the prior single-call behaviour) while
+        // very large files are split, so a single transient failure no longer
+        // wipes out the whole file's renames.
+        private const val LLM_BATCH_SIZE = 50
+        private const val LLM_MAX_ATTEMPTS = 3
+        private const val LLM_RETRY_BACKOFF_BASE_MILLIS = 1_000L
+        private const val LLM_RETRY_BACKOFF_CAP_MILLIS = 8_000L
 
         /**
          * Default blacklisted variable annotations (framework/infrastructure annotations).
