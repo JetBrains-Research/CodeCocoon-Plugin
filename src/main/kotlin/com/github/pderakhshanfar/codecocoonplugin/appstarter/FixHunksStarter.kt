@@ -147,9 +147,13 @@ class FixHunksStarter : ApplicationStarter {
                             )
                         }
                         else -> {
-                            failedBatches++
-                            logger.error(
-                                "[FixHunks] Batch $batchNum/${batches.size} verification failed " +
+                            // Agent ran cleanly to completion but the verifier says some
+                            // hunks didn't take. NOT a process-level failure — we still
+                            // want exit code 0 so the caller's retry pipeline can read
+                            // the output JSON and decide what to redo. Only true agent
+                            // failures (throws / iteration caps) flip the exit code.
+                            logger.warn(
+                                "[FixHunks] Batch $batchNum/${batches.size} partial " +
                                     "($appliedCount/${batch.size} hunks applied). Unapplied:\n${result.unappliedSummary()}",
                             )
                         }
@@ -196,10 +200,21 @@ class FixHunksStarter : ApplicationStarter {
         }
 
         if (failedBatches > 0) {
-            logger.error("[FixHunks] Completed with $failedBatches failed batch(es) out of ${batches.size}")
+            logger.error(
+                "[FixHunks] Completed with $failedBatches batch(es) where the agent itself " +
+                    "failed (out of ${batches.size}). Exit code 1.",
+            )
             exitProcess(1)
         }
-        logger.info("[FixHunks] SUCCESS: all ${batches.size} batches applied")
+        if (allUnfixed.isNotEmpty()) {
+            logger.warn(
+                "[FixHunks] Agent finished cleanly. ${allFixedIds.size}/${input.hunks.size} hunks " +
+                    "verified applied; ${allUnfixed.size} not applied. Exit code 0 — caller can retry " +
+                    "the unfixed hunks (see output JSON for the list).",
+            )
+        } else {
+            logger.info("[FixHunks] SUCCESS: all ${input.hunks.size} hunks applied across ${batches.size} batch(es)")
+        }
         exitProcess(0)
     }
 
