@@ -12,11 +12,13 @@ import ai.koog.prompt.dsl.Prompt
 import ai.koog.prompt.llm.LLModel
 import ai.koog.rag.base.files.JVMFileSystemProvider
 import com.github.pderakhshanfar.codecocoonplugin.common.LLM
+import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.diagnostic.thisLogger
 import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import java.io.File
 
 @Serializable
 data class FixHunksInput(
@@ -89,13 +91,140 @@ suspend fun runImportHunkFixerAgent(
     ) {
         handleEvents {
             onToolCallStarting { ctx ->
-                thisLogger().info("→ Calling `${ctx.tool.name}` with: ${ctx.toolArgs}")
+                logBoth("→ Calling `${ctx.tool.name}` with: ${ctx.toolArgs}")
+            }
+            onToolCallCompleted { ctx ->
+                logBoth("← `${ctx.tool.name}` returned: ${ctx.result.toString().take(MAX_TOOL_LOG_CHARS)}")
+            }
+            onToolCallFailed { ctx ->
+                logBoth("✖ `${ctx.tool.name}` FAILED: ${ctx.throwable.message}")
+            }
+            onToolValidationFailed { ctx ->
+                logBoth("✖ `${ctx.tool.name}` VALIDATION FAILED: ${ctx.error}")
             }
         }
     }
 
-    return runCatching {
+    val agentReport = runCatching {
         agent.run(agentInput = buildUserPrompt(repoRoot, batchDescription, hunks))
+    }.getOrElse {
+        return Result.failure(it)
+    }
+
+    val verifications = hunks.map { verifyHunkApplied(repoRoot, it) }
+    val unapplied = verifications.filterNot { it.applied }
+    return if (unapplied.isEmpty()) {
+        Result.success(agentReport)
+    } else {
+        val summary = unapplied.joinToString("\n  - ") { "${it.file} [${it.hunkType}]: ${it.reason}" }
+        Result.failure(
+            IllegalStateException(
+                "Filesystem verification rejected the agent's report. " +
+                "${unapplied.size}/${hunks.size} hunk(s) NOT applied:\n  - $summary\n" +
+                "Agent's own report (advisory):\n$agentReport"
+            )
+        )
+    }
+}
+
+private const val MAX_TOOL_LOG_CHARS = 500
+
+private val agentLogger = Logger.getInstance("FixImportHunksAgent")
+
+private fun logBoth(message: String) {
+    agentLogger.info(message)
+    println(message)
+}
+
+/**
+ * Result of filesystem-level verification of a single hunk after the agent run.
+ * The agent's own `applied: true` claim is advisory; this is the source of truth.
+ */
+data class VerifyResult(
+    val file: String,
+    val hunkType: String,
+    val applied: Boolean,
+    val reason: String,
+)
+
+/**
+ * Reads the file under `repoRoot/<hunk.file>` and checks the post-condition
+ * implied by the hunk type.
+ *
+ * - `import_reorder`: filters the file's imports down to the ones listed in
+ *   `originalImportBlock` (preserving file order) and checks they match the
+ *   target order. If they still match `currentImportBlock`, the agent did
+ *   nothing.
+ * - `wildcard_import_removal`: every line in `removedWildcards` must appear
+ *   verbatim as a standalone import line in the file.
+ */
+private fun verifyHunkApplied(repoRoot: String, hunk: HunkSpec): VerifyResult {
+    val target = File(repoRoot, hunk.file)
+    if (!target.isFile) {
+        return VerifyResult(hunk.file, hunk.hunkType, false, "file not found at $target")
+    }
+    val content = try {
+        target.readText()
+    } catch (e: Exception) {
+        return VerifyResult(hunk.file, hunk.hunkType, false, "could not read file: ${e.message}")
+    }
+    val fileImports = content.lineSequence()
+        .map { it.trim() }
+        .filter { it.startsWith("import ") && it.endsWith(";") }
+        .toList()
+
+    return when (hunk.hunkType) {
+        "import_reorder" -> verifyReorder(hunk, fileImports)
+        "wildcard_import_removal" -> verifyWildcard(hunk, fileImports)
+        else -> VerifyResult(hunk.file, hunk.hunkType, false, "unknown hunk_type: ${hunk.hunkType}")
+    }
+}
+
+private fun verifyReorder(hunk: HunkSpec, fileImports: List<String>): VerifyResult {
+    val target = hunk.originalImportBlock?.map { it.importStmt.trim() }
+        ?: return VerifyResult(hunk.file, hunk.hunkType, false, "missing originalImportBlock")
+    val current = hunk.currentImportBlock?.map { it.importStmt.trim() } ?: emptyList()
+
+    // Are all expected imports even present?
+    val missing = target.filter { it !in fileImports }
+    if (missing.isNotEmpty()) {
+        return VerifyResult(
+            hunk.file, hunk.hunkType, false,
+            "imports missing from file: ${missing.joinToString(", ")}",
+        )
+    }
+
+    // Filter file's imports down to just the ones this hunk cares about,
+    // preserving file order. That sequence must equal the target order.
+    val targetSet = target.toSet()
+    val filtered = fileImports.filter { it in targetSet }
+
+    return if (filtered == target) {
+        VerifyResult(hunk.file, hunk.hunkType, true, "imports in target order")
+    } else if (current.isNotEmpty() && filtered == current) {
+        VerifyResult(
+            hunk.file, hunk.hunkType, false,
+            "imports still in pre-revert order; agent did not edit the file",
+        )
+    } else {
+        VerifyResult(
+            hunk.file, hunk.hunkType, false,
+            "imports in unexpected order: $filtered (expected $target)",
+        )
+    }
+}
+
+private fun verifyWildcard(hunk: HunkSpec, fileImports: List<String>): VerifyResult {
+    val expected = hunk.removedWildcards?.map { it.trim() }
+        ?: return VerifyResult(hunk.file, hunk.hunkType, false, "missing removedWildcards")
+    val missing = expected.filter { it !in fileImports }
+    return if (missing.isEmpty()) {
+        VerifyResult(hunk.file, hunk.hunkType, true, "wildcards present: ${expected.joinToString(", ")}")
+    } else {
+        VerifyResult(
+            hunk.file, hunk.hunkType, false,
+            "wildcards still missing from file: ${missing.joinToString(", ")}",
+        )
     }
 }
 
@@ -105,7 +234,7 @@ private fun buildSystemPrompt(repoRoot: String): String = """
     import optimizer) introduced into Java source files. You must minimize
     the diff: revert ONLY what each hunk describes, and nothing else.
 
-    REPO ROOT: $repoRoot
+    REPO ROOT: '$repoRoot'
 
     INPUT SCHEMA — fields you will receive per hunk:
       Common to every hunk:
@@ -212,6 +341,24 @@ private fun buildSystemPrompt(repoRoot: String): String = """
         this same run, before producing your terminal message.
       • The ONLY acceptable terminal message is the JSON report below, and
         you may emit it ONLY AFTER every needed edit_file call has run.
+
+    TRUTHFULNESS (CRITICAL):
+      • Failure to call `edit_file` for a hunk is NOT a no-op success — it
+        is a FAILURE of the run. Skipping a hunk because "the file already
+        looks fine" is forbidden; trust the input, not your judgment.
+      • Mark a hunk `"applied": true` ONLY if you actually called
+        `edit_file` for that hunk AND the tool's response said the patch
+        was applied successfully ("Successfully edited file"). If the tool
+        responded with "patch application failed", the hunk is NOT applied
+        — re-read the file with `read_file` to copy the import block
+        verbatim, then call `edit_file` again with that fresh `original`.
+      • NEVER report `"applied": true` for a hunk you did not edit. NEVER
+        report success based on what you intended to do — only on tool
+        responses you actually received in this run.
+      • A separate filesystem verifier runs after you finish and will
+        compare every file against the expected post-revert state. False
+        `"applied": true` claims will be caught and the run will be marked
+        failed regardless of what your report says.
 
     OUTPUT (final assistant message — emit ONLY after all edits are done):
       A short JSON report:
