@@ -77,6 +77,31 @@ class RenameVariableTransformation(
                     return TransformationResult.Skipped("No matching variables found in ${virtualFile.name}")
                 }
 
+                // Snapshot every variable's signature BEFORE any rename happens. Regenerating
+                // the signature mid-loop is unsafe: when a field is renamed, IntelliJ's
+                // RenameProcessor cascade-renames the constructor parameter bound to it via
+                // `this.x = x`, so a later `psiVar.name` for that parameter would already be
+                // the post-cascade name and the memory key would be wrong.
+                val signatures: Map<PsiVariable, String> = withReadAction {
+                    eligibleVariables.mapNotNull { psiVar ->
+                        PsiSignatureGenerator.generateSignature(psiVar)?.let { psiVar to it }
+                    }.toMap()
+                }
+
+                // Process inner scopes first so the field-rename cascade has nothing to
+                // latch onto: by the time a PsiField is renamed, any constructor parameter
+                // that used to share its name has already been renamed to its own
+                // LLM-suggested name, so RenameJavaFieldProcessor's "rename the bound
+                // parameter" condition (matching name) no longer holds.
+                val orderedVariables = eligibleVariables.sortedBy { v ->
+                    when (v) {
+                        is PsiLocalVariable -> 0
+                        is PsiParameter -> 1
+                        is PsiField -> 2
+                        else -> 3
+                    }
+                }
+
                 logger.info("  ⏲ Generating rename suggestions for ${eligibleVariables.size} variables...")
 
                 val renaming = runBlocking {
@@ -92,12 +117,11 @@ class RenameVariableTransformation(
                 val saveRenamesInMemory = !useMemory || generateWhenNotInMemory
 
                 // Try renaming each variable with suggestions until one succeeds
-                val successfulRenames = eligibleVariables.mapNotNull { psiVar ->
+                val successfulRenames = orderedVariables.mapNotNull { psiVar ->
                     val varName = withReadAction { psiVar.name }
                     val suggestions = renaming.suggestions[psiVar] ?: return@mapNotNull null
 
-                    // Generate signature BEFORE renaming
-                    val signature = withReadAction { PsiSignatureGenerator.generateSignature(psiVar) }
+                    val signature = signatures[psiVar]
                     if (signature == null) {
                         logger.warn("    ⊘ Could not generate signature for variable $varName")
                         return@mapNotNull null
