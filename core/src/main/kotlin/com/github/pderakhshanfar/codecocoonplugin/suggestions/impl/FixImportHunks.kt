@@ -50,7 +50,13 @@ data class HunkSpec(
     @SerialName("original_import_block") val originalImportBlock: List<ImportLine>? = null,
     @SerialName("current_import_block") val currentImportBlock: List<ImportLine>? = null,
     // Present only when hunk_type == "wildcard_import_removal":
+    // Ordered list; an empty string "" denotes a blank separator line that was removed and must be restored.
     @SerialName("removed_wildcards") val removedWildcards: List<String>? = null,
+    // Present only when hunk_type == "import_cross_hunk_move":
+    // Role of THIS hunk in a multi-hunk rotation: "spurious_addition" | "missing_import" | "mixed".
+    @SerialName("cross_move_role") val crossMoveRole: String? = null,
+    // Specific import line(s) involved in THIS hunk of the rotation.
+    @SerialName("moved_imports") val movedImports: List<String>? = null,
 )
 
 @OptIn(ExperimentalSerializationApi::class)
@@ -105,13 +111,24 @@ suspend fun runImportHunkFixerAgent(
         }
     }
 
+    // Snapshot files touched by import_cross_hunk_move BEFORE the run, so
+    // we can detect "agent did nothing" cases that aren't visible from
+    // import-presence checks alone (the rotation preserves the import set).
+    val crossMoveFiles = hunks
+        .filter { it.hunkType == "import_cross_hunk_move" }
+        .map { it.file }
+        .distinct()
+    val crossMoveBefore: Map<String, String> = crossMoveFiles.mapNotNull { rel ->
+        runCatching { rel to File(repoRoot, rel).readText() }.getOrNull()
+    }.toMap()
+
     val agentReport = runCatching {
         agent.run(agentInput = buildUserPrompt(repoRoot, batchDescription, hunks))
     }.getOrElse {
         return Result.failure(it)
     }
 
-    val verifications = hunks.map { verifyHunkApplied(repoRoot, it) }
+    val verifications = hunks.map { verifyHunkApplied(repoRoot, it, crossMoveBefore) }
     val unapplied = verifications.filterNot { it.applied }
     return if (unapplied.isEmpty()) {
         Result.success(agentReport)
@@ -158,7 +175,11 @@ data class VerifyResult(
  * - `wildcard_import_removal`: every line in `removedWildcards` must appear
  *   verbatim as a standalone import line in the file.
  */
-private fun verifyHunkApplied(repoRoot: String, hunk: HunkSpec): VerifyResult {
+private fun verifyHunkApplied(
+    repoRoot: String,
+    hunk: HunkSpec,
+    crossMoveBefore: Map<String, String> = emptyMap(),
+): VerifyResult {
     val target = File(repoRoot, hunk.file)
     if (!target.isFile) {
         return VerifyResult(hunk.file, hunk.hunkType, false, "file not found at $target")
@@ -176,6 +197,7 @@ private fun verifyHunkApplied(repoRoot: String, hunk: HunkSpec): VerifyResult {
     return when (hunk.hunkType) {
         "import_reorder" -> verifyReorder(hunk, fileImports)
         "wildcard_import_removal" -> verifyWildcard(hunk, fileImports)
+        "import_cross_hunk_move" -> verifyCrossHunkMove(hunk, fileImports, content, crossMoveBefore[hunk.file])
         else -> VerifyResult(hunk.file, hunk.hunkType, false, "unknown hunk_type: ${hunk.hunkType}")
     }
 }
@@ -215,7 +237,9 @@ private fun verifyReorder(hunk: HunkSpec, fileImports: List<String>): VerifyResu
 }
 
 private fun verifyWildcard(hunk: HunkSpec, fileImports: List<String>): VerifyResult {
-    val expected = hunk.removedWildcards?.map { it.trim() }
+    val expected = hunk.removedWildcards
+        ?.filter { it.isNotEmpty() }       // skip blank-separator markers
+        ?.map { it.trim() }
         ?: return VerifyResult(hunk.file, hunk.hunkType, false, "missing removedWildcards")
     val missing = expected.filter { it !in fileImports }
     return if (missing.isEmpty()) {
@@ -224,6 +248,87 @@ private fun verifyWildcard(hunk: HunkSpec, fileImports: List<String>): VerifyRes
         VerifyResult(
             hunk.file, hunk.hunkType, false,
             "wildcards still missing from file: ${missing.joinToString(", ")}",
+        )
+    }
+}
+
+/**
+ * Verifies an `import_cross_hunk_move` hunk. The rotation preserves the
+ * file's overall import set, so set-presence alone is insufficient — we
+ * also compare the post-run file content against a pre-run snapshot to
+ * detect "agent did nothing" cases.
+ *
+ * - "missing_import" / "mixed": every line in `moved_imports` MUST be
+ *   present in the file's imports after the run.
+ * - "spurious_addition" / "mixed": the file content must DIFFER from the
+ *   pre-run snapshot (something was edited). We can't easily check
+ *   "imports no longer at the spurious location" without parsing line
+ *   ranges, so we rely on the file-changed signal plus the missing-import
+ *   counterpart hunks (each rotation has at least one missing_import or
+ *   mixed entry as well).
+ */
+private fun verifyCrossHunkMove(
+    hunk: HunkSpec,
+    fileImports: List<String>,
+    fileContent: String,
+    beforeContent: String?,
+): VerifyResult {
+    val moved = hunk.movedImports?.map { it.trim() }
+        ?: return VerifyResult(hunk.file, hunk.hunkType, false, "missing movedImports")
+    val role = hunk.crossMoveRole
+        ?: return VerifyResult(hunk.file, hunk.hunkType, false, "missing crossMoveRole")
+
+    val fileChanged = beforeContent != null && fileContent != beforeContent
+    val snapshotMissing = beforeContent == null
+
+    return when (role) {
+        "missing_import" -> {
+            val missing = moved.filter { it !in fileImports }
+            if (missing.isEmpty()) {
+                VerifyResult(hunk.file, hunk.hunkType, true, "moved imports restored: ${moved.joinToString(", ")}")
+            } else {
+                VerifyResult(
+                    hunk.file, hunk.hunkType, false,
+                    "moved imports still missing: ${missing.joinToString(", ")}",
+                )
+            }
+        }
+        "spurious_addition" -> {
+            when {
+                snapshotMissing -> VerifyResult(
+                    hunk.file, hunk.hunkType, true,
+                    "no pre-run snapshot; spurious_addition cannot be falsified",
+                )
+                fileChanged -> VerifyResult(
+                    hunk.file, hunk.hunkType, true,
+                    "file changed (rotation applied)",
+                )
+                else -> VerifyResult(
+                    hunk.file, hunk.hunkType, false,
+                    "file unchanged since before agent run; rotation not applied",
+                )
+            }
+        }
+        "mixed" -> {
+            val missing = moved.filter { it !in fileImports }
+            when {
+                missing.isNotEmpty() -> VerifyResult(
+                    hunk.file, hunk.hunkType, false,
+                    "moved imports missing from file: ${missing.joinToString(", ")}",
+                )
+                snapshotMissing || fileChanged -> VerifyResult(
+                    hunk.file, hunk.hunkType, true,
+                    "moved imports present and file changed",
+                )
+                else -> VerifyResult(
+                    hunk.file, hunk.hunkType, false,
+                    "file unchanged since before agent run; rotation not applied",
+                )
+            }
+        }
+        else -> VerifyResult(
+            hunk.file, hunk.hunkType, false,
+            "unknown cross_move_role: $role",
         )
     }
 }
@@ -239,7 +344,8 @@ private fun buildSystemPrompt(repoRoot: String): String = """
     INPUT SCHEMA — fields you will receive per hunk:
       Common to every hunk:
         • file               — repo-relative path to the Java source file.
-        • hunk_type          — "import_reorder" or "wildcard_import_removal".
+        • hunk_type          — "import_reorder", "wildcard_import_removal",
+                              or "import_cross_hunk_move".
         • description        — human-readable explanation of this specific hunk.
         • hunk_header        — the raw `@@ -a,b +c,d @@` header from the diff.
         • old_start_line / old_line_count   — window in the ORIGINAL file.
@@ -259,10 +365,26 @@ private fun buildSystemPrompt(repoRoot: String): String = """
                                   identical to original_import_block — only
                                   the ORDER differs.
       For hunk_type == "wildcard_import_removal" ONLY:
-        • removed_wildcards  — list of wildcard import statements (verbatim,
+        • removed_wildcards  — ORDERED list of import lines (verbatim,
                               including `import` keyword and trailing `;`)
                               that the optimizer DELETED and that you must
-                              ADD BACK.
+                              ADD BACK in this order. An entry equal to the
+                              empty string "" denotes a BLANK separator
+                              line that was also removed — restore it as a
+                              blank line in the same position.
+      For hunk_type == "import_cross_hunk_move" ONLY:
+        • cross_move_role    — role of THIS hunk in a coordinated multi-hunk
+                              rotation:
+                                "spurious_addition" — this location only
+                                  ADDS imports that actually belong at
+                                  another location → REMOVE them here.
+                                "missing_import" — this location only
+                                  REMOVES imports that belong here →
+                                  ADD them back here.
+                                "mixed" — this location both adds and
+                                  removes; revert both sides.
+        • moved_imports      — the specific import line(s) involved in THIS
+                              hunk (verbatim).
 
     ALLOWED CHANGES (per hunk):
       • hunk_type = "import_reorder":
@@ -280,6 +402,36 @@ private fun buildSystemPrompt(repoRoot: String): String = """
           of the import block, with a preceding blank line if the diff
           shows one). If the diff is ambiguous, prefer placing it at the
           end of the import block.
+      • hunk_type = "import_cross_hunk_move":
+          The optimizer ROTATED imports between two or more locations in
+          the SAME file (e.g. swapped imports that were originally near
+          line 3 with imports near line 120 of the same file). The input
+          contains MULTIPLE entries with this hunk_type for one file —
+          they are coordinated and must be reverted TOGETHER as a single
+          rotation, not independently:
+            - cross_move_role == "spurious_addition" → DELETE the lines
+              in `moved_imports` from this location.
+            - cross_move_role == "missing_import" → INSERT the lines in
+              `moved_imports` back at this location.
+            - cross_move_role == "mixed" → both delete and insert at this
+              location, as `action` describes.
+          Net effect: the SET of imports in the file is unchanged; only
+          their positions are restored. Process all entries for the same
+          file in ONE pass (one read_file, then plan all
+          insertions/deletions, then issue your edit_file call(s)). Do
+          NOT insert before deleting (or vice versa) in a way that ends
+          up duplicating the same import line.
+
+    CROSS-HUNK COORDINATION (import_cross_hunk_move):
+      When you see N ≥ 2 import_cross_hunk_move entries with the same
+      `file`, treat them as a single coordinated revert. After your
+      edits:
+        • Every import that was originally in the file must still be
+          there exactly once (no duplicates, no losses).
+        • Imports listed in spurious_addition entries must NOT remain at
+          their spurious location.
+        • Imports listed in missing_import entries MUST appear at their
+          missing location.
 
     DO NOT TOUCH OTHER CHANGES IN `full_hunk_diff`:
       The `full_hunk_diff` may contain unrelated `+`/`-` lines from other
@@ -289,6 +441,8 @@ private fun buildSystemPrompt(repoRoot: String): String = """
         - For import_reorder: only the imports in original_import_block /
           current_import_block.
         - For wildcard_import_removal: only the lines in removed_wildcards.
+        - For import_cross_hunk_move: only the lines in moved_imports
+          (across all hunks for the same file).
 
     FORBIDDEN CHANGES — MUST NEVER HAPPEN:
       • Do not modify code outside the import block.
@@ -317,8 +471,17 @@ private fun buildSystemPrompt(repoRoot: String): String = """
                  imports section).
            - For wildcard_import_removal:
                • Insert each wildcard from `removed_wildcards` into the
-                 current import block at the right position. Do NOT remove
-                 any other import line.
+                 current import block at the right position. Empty-string
+                 entries denote a blank separator line — restore them as
+                 blank lines. Do NOT remove any other import line.
+           - For import_cross_hunk_move:
+               • Group all entries with this hunk_type for the SAME file
+                 and revert them as ONE rotation. Read the file ONCE,
+                 plan all deletions (spurious_addition entries) and
+                 insertions (missing_import entries; both for mixed)
+                 together, then issue your edit_file call(s). The
+                 post-revert file must contain every original import
+                 exactly once — no duplicates, no losses.
       4. Use edit_file with `original` = the exact current import block
          snippet (multiple consecutive lines, copied verbatim from the
          file you just read) and `replacement` = the corrected block. Keep
@@ -396,8 +559,16 @@ private fun buildUserPrompt(
           • For "import_reorder": reorder current imports to match
             `original_import_block` (set of imports unchanged).
           • For "wildcard_import_removal": insert every line from
-            `removed_wildcards` into the import block; do not remove or
-            modify any other import.
+            `removed_wildcards` (in order; "" entries = blank separator
+            lines) into the import block; do not remove or modify any
+            other import.
+          • For "import_cross_hunk_move": group ALL entries for the SAME
+            file and revert them as one rotation. Per-entry: if
+            cross_move_role == "spurious_addition", DELETE the lines in
+            `moved_imports` from this location; if "missing_import",
+            INSERT them back at this location; if "mixed", do both as the
+            `action` describes. The file's overall import set must remain
+            unchanged — no duplicates, no losses.
           • Use list_directory only if read_file cannot find the file.
           • Ignore unrelated `+`/`-` lines in `full_hunk_diff` — they are
             from other transformations and must stay.
