@@ -5,16 +5,11 @@ import com.github.pderakhshanfar.codecocoonplugin.intellij.logging.withStdout
 import com.github.pderakhshanfar.codecocoonplugin.suggestions.impl.FixHunksInput
 import com.github.pderakhshanfar.codecocoonplugin.suggestions.impl.runImportHunkFixerAgent
 import com.github.pderakhshanfar.codecocoonplugin.suggestions.impl.unappliedSummary
-import kotlinx.serialization.json.JsonArray
-import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.JsonPrimitive
-import kotlinx.serialization.json.buildJsonArray
-import kotlinx.serialization.json.buildJsonObject
 import com.intellij.openapi.application.ApplicationStarter
 import com.intellij.openapi.diagnostic.thisLogger
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.ExperimentalSerializationApi
-import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.*
 import java.io.File
 import kotlin.system.exitProcess
 

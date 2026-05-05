@@ -13,7 +13,6 @@ import ai.koog.prompt.llm.LLModel
 import ai.koog.rag.base.files.JVMFileSystemProvider
 import com.github.pderakhshanfar.codecocoonplugin.common.LLM
 import com.intellij.openapi.diagnostic.Logger
-import com.intellij.openapi.diagnostic.thisLogger
 import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
