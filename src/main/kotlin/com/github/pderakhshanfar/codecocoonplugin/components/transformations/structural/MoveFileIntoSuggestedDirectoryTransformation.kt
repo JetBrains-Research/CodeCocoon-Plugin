@@ -328,10 +328,15 @@ class MoveFileIntoSuggestedDirectoryTransformation private constructor(
             }
         }
 
-        // no suggestions fit
-        logger.info("    ✗ Failed to move $filename: None of ${suggestions.size} suggestions fit")
-        return TransformationResult.Failure(
-            "Failed to move $filename into any of ${suggestions.size} suggested directories:\n${suggestions.joinToString("\n") { "  - $it" }}")
+        // No suggestion fit — every iteration above set `successfullyMoved` to false
+        // (conflict callback / exception in processor.run() / 3-minute timeout). Treat this
+        // as Skipped rather than Failure: the input file is well-formed, suggestions were
+        // obtained, the move processor just rejected every target. Genuine failures
+        // (non-Java input, missing project root, suggestion-API error) still return Failure
+        // upstream of this loop.
+        logger.info("    ⊘ Skipped moving $filename: move processor rejected all ${suggestions.size} suggestion(s)")
+        return TransformationResult.Skipped(
+            "Skipped moving $filename: move processor rejected all ${suggestions.size} suggested directories (conflicts/exceptions/timeouts):\n${suggestions.joinToString("\n") { "  - $it" }}")
     }
 
     /**
