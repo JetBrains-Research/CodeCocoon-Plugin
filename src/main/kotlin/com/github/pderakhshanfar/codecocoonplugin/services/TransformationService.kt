@@ -145,6 +145,10 @@ class TransformationService {
         // Create a global memory instance for the entire project
         // Memory is automatically saved via .use {} when the block exits
         PersistentMemory(config.memoryFilepath).use { memory ->
+            val transformationsStr = transformations.withIndex()
+                .joinToString(separator = ",\n") { "   ${it.index + 1}) ${it.value.id}" }
+            logger.info("[TransformationService] Applying the following transformations in order:\n$transformationsStr")
+
             logger.info("[TransformationService] Created global memory at '${config.memoryFilepath}'")
 
             val succeededIds = mutableListOf<String>()
@@ -180,6 +184,7 @@ class TransformationService {
                 }
             }
             logger.info("[TransformationService] Successfully collected (and filtered) ${filteredFileContexts.size} file contexts")
+
 
             // for each file, apply all transformations
             for (context in filteredFileContexts) {
