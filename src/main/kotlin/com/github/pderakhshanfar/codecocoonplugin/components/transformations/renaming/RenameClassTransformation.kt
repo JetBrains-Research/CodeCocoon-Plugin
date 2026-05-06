@@ -253,6 +253,10 @@ class RenameClassTransformation(
                 +"Example structure:"
                 +"{\"suggestions\": [\"BestFittingRename\", \"SecondBestFittingRename\", ... ]}"
                 +"Every suggestion must be a valid Java identifier and semantically similar to the original name."
+                +("Suggestions MUST differ from the original name by more than letter case alone — " +
+                    "case-only renames (e.g. `JSON` → `Json`, `XML` → `Xml`) are forbidden because they collide " +
+                    "on case-insensitive filesystems. Add or change letters/words instead " +
+                    "(e.g. `JSON` → `JsonMapper`, `XML` → `XmlDocument`).")
             }
 
         }
@@ -262,10 +266,10 @@ class RenameClassTransformation(
             prompt = classRenamePrompt
         )
 
-        return if (result != null) buildSuggestionList(result.suggestions) else emptyList()
+        return if (result != null) buildSuggestionList(result.suggestions, context.className) else emptyList()
     }
 
-    private fun buildSuggestionList(rawSuggestions: List<String>): List<String> {
+    private fun buildSuggestionList(rawSuggestions: List<String>, originalName: String): List<String> {
         val normalized = rawSuggestions
             .asSequence()
             .map { it.trim() }
@@ -273,10 +277,18 @@ class RenameClassTransformation(
             .distinct()
             .toList()
 
-        val firstSuggestion = normalized.firstOrNull() ?: return emptyList()
+        // Defensive filter: drop suggestions that equal the original name case-insensitively
+        // (covers both same-as-original and case-only variants like `JSON` -> `Json`, which
+        // collide with the source file on case-insensitive filesystems and break `git apply`).
+        val (kept, dropped) = normalized.partition { !it.equals(originalName, ignoreCase = true) }
+        if (dropped.isNotEmpty()) {
+            logger.info("    ⊘ Dropped ${dropped.size} case-only/identical suggestion(s) for `$originalName`: ${dropped.joinToString(", ")}")
+        }
+
+        val firstSuggestion = kept.firstOrNull() ?: return emptyList()
         val internalFallback = "${firstSuggestion}Internal"
 
-        return if (normalized.contains(internalFallback)) normalized else normalized + internalFallback
+        return if (kept.contains(internalFallback)) kept else kept + internalFallback
     }
 
     private fun tryRenameClassAndUsages(
