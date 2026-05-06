@@ -27,6 +27,7 @@ import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.psi.*
 import com.intellij.psi.search.FileTypeIndex
 import com.intellij.psi.search.GlobalSearchScope
+import com.intellij.psi.search.searches.OverridingMethodsSearch
 import com.intellij.psi.search.searches.ReferencesSearch
 import com.intellij.psi.util.PsiTreeUtil
 import com.intellij.refactoring.rename.RenameProcessor
@@ -409,6 +410,30 @@ class RenameMethodTransformation(
                 for (extra in methods.drop(1)) {
                     processor.addElement(extra, newName)
                 }
+
+                // Pre-emptively attach transitive overriders. RenameProcessor's implicit
+                // expansion via RenameJavaMethodProcessor.prepareRenaming +
+                // OverridingMethodsSearch is unreliable when several same-name overloads
+                // are added to one processor and renamed to the same target name —
+                // observed: only the seed overload's overrider got renamed, sibling
+                // overloads' overriders were silently left with the old name. Adding
+                // them as first-class entries in myAllRenames forces the same rename
+                // path that already works for the seed.
+                val familyMethodSet = methods.toHashSet()
+                val projectFileIndex = ProjectFileIndex.getInstance(project)
+                val attachedOverriders = LinkedHashSet<PsiMethod>()
+                for (method in methods) {
+                    OverridingMethodsSearch.search(method, /* checkDeep = */ true).findAll().forEach { overrider ->
+                        if (overrider in familyMethodSet) return@forEach
+                        if (!attachedOverriders.add(overrider)) return@forEach
+                        val vf = overrider.containingFile?.virtualFile
+                        if (vf != null && projectFileIndex.isInLibrary(vf)) return@forEach
+                        processor.addElement(overrider, newName)
+                    }
+                }
+                if (attachedOverriders.isNotEmpty()) {
+                    logger.info("          ↳ Attached ${attachedOverriders.size} transitive overrider(s) to rename processor")
+                }
                 processor
             }
 
@@ -512,6 +537,10 @@ class RenameMethodTransformation(
             val psiFile = psiManager.findFile(vf) as? PsiJavaFile ?: continue
             val document = docManager.getDocument(psiFile)
             psiFile.accept(object : JavaRecursiveElementVisitor() {
+                /*override fun visitMethod(method: PsiMethod) {
+                    super.visitMethod(method)
+                }*/
+
                 override fun visitMethodCallExpression(expr: PsiMethodCallExpression) {
                     super.visitMethodCallExpression(expr)
                     val refExpr = expr.methodExpression
