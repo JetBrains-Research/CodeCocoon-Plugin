@@ -399,6 +399,7 @@ class RenameMethodTransformation(
             val firstMethod = methods.first()
             val oldName = IntelliJAwareTransformation.withReadAction { firstMethod.name }
 
+            var attachedOverridersCount = 0
             val renameProcessor = IntelliJAwareTransformation.withReadAction {
                 val processor = RenameProcessor(
                     /* project = */ project,
@@ -431,9 +432,29 @@ class RenameMethodTransformation(
                         processor.addElement(overrider, newName)
                     }
                 }
-                if (attachedOverriders.isNotEmpty()) {
-                    logger.info("          ↳ Attached ${attachedOverriders.size} transitive overrider(s) to rename processor")
+                attachedOverridersCount = attachedOverriders.size
+
+                // Full target table — family + attached overriders — for debuggability
+                val totalTargets = methods.size + attachedOverriders.size
+                logger.info("          ↳ Rename processor targets ($totalTargets method(s) total):")
+                val targetDisplayLimit = 10
+                var shown = 0
+                for (method in methods) {
+                    if (shown >= targetDisplayLimit) break
+                    val sig = PsiSignatureGenerator.generateSignature(method) ?: "<no-signature>"
+                    logger.info("              [family]    $sig")
+                    shown++
                 }
+                for (overrider in attachedOverriders) {
+                    if (shown >= targetDisplayLimit) break
+                    val sig = PsiSignatureGenerator.generateSignature(overrider) ?: "<no-signature>"
+                    logger.info("              [overrider] $sig")
+                    shown++
+                }
+                if (totalTargets > targetDisplayLimit) {
+                    logger.info("              ... (${totalTargets - targetDisplayLimit} more)")
+                }
+
                 processor
             }
 
@@ -441,14 +462,38 @@ class RenameMethodTransformation(
             // the pre-rename PSI to return the references that will actually
             // be rewritten. After run() the seed element has been renamed and
             // the result is unreliable.
+            var usageCount = 0
             val modifiedFiles = IntelliJAwareTransformation.withReadAction {
                 val files = mutableSetOf<PsiFile>()
-                renameProcessor.findUsages().forEach { usageInfo ->
-                    usageInfo.file?.let { files.add(it) }
+                val docManager = PsiDocumentManager.getInstance(project)
+                val usagePaths = mutableListOf<String>()
+                val usages = renameProcessor.findUsages()
+                for (usageInfo in usages) {
+                    val file = usageInfo.file ?: continue
+                    files.add(file)
+                    val element = usageInfo.element
+                    val vf = file.virtualFile
+                    if (element != null && vf != null) {
+                        val doc = docManager.getDocument(file)
+                        val line = doc?.getLineNumber(element.textRange.startOffset)?.plus(1) ?: -1
+                        val path = project.relativeToRootOrAbsPath(vf)
+                        usagePaths.add("$path:$line")
+                    }
                 }
                 for (method in methods) {
                     method.containingFile?.let { files.add(it) }
                 }
+                usageCount = usages.size
+
+                if (usagePaths.isNotEmpty()) {
+                    logger.info("          ↳ Rename processor will rewrite ${usagePaths.size} usage(s):")
+                    val usageDisplayLimit = 10
+                    usagePaths.take(usageDisplayLimit).forEach { logger.info("              $it") }
+                    if (usagePaths.size > usageDisplayLimit) {
+                        logger.info("              ... (${usagePaths.size - usageDisplayLimit} more)")
+                    }
+                }
+
                 files
             }
 
@@ -478,7 +523,12 @@ class RenameMethodTransformation(
             }
 
             val overloadLabel = if (methods.size > 1) "${methods.size} overloads" else "1 overload"
-            logger.info("          • Renamed `$oldName` ($overloadLabel) to `$newName` in ${modifiedFiles.size} files")
+            val totalMethodsRenamed = methods.size + attachedOverridersCount
+            logger.info(
+                "          • Renamed `$oldName` ($overloadLabel) to `$newName`: " +
+                    "$totalMethodsRenamed method(s) renamed, " +
+                    "$usageCount usage(s) rewritten across ${modifiedFiles.size} file(s)"
+            )
             modifiedFiles
         } catch (e: ProcessCanceledException) {
             // Must rethrow control flow exceptions
@@ -537,10 +587,6 @@ class RenameMethodTransformation(
             val psiFile = psiManager.findFile(vf) as? PsiJavaFile ?: continue
             val document = docManager.getDocument(psiFile)
             psiFile.accept(object : JavaRecursiveElementVisitor() {
-                /*override fun visitMethod(method: PsiMethod) {
-                    super.visitMethod(method)
-                }*/
-
                 override fun visitMethodCallExpression(expr: PsiMethodCallExpression) {
                     super.visitMethodCallExpression(expr)
                     val refExpr = expr.methodExpression
