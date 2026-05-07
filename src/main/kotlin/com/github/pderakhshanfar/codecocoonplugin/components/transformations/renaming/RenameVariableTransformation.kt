@@ -595,9 +595,9 @@ class RenameVariableTransformation(
         // produce one call (preserving the prior single-call behaviour) while
         // very large files are split, so a single transient failure no longer
         // wipes out the whole file's renames.
-        private const val LLM_BATCH_SIZE = 50
+        private const val LLM_BATCH_SIZE = 40
         private const val LLM_MAX_ATTEMPTS = 3
-        private const val LLM_RETRY_BACKOFF_BASE_MILLIS = 1_000L
+        private const val LLM_RETRY_BACKOFF_BASE_MILLIS = 2_000L
         private const val LLM_RETRY_BACKOFF_CAP_MILLIS = 8_000L
 
         /**
