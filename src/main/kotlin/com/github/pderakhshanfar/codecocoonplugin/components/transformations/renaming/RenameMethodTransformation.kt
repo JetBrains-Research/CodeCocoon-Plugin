@@ -31,6 +31,7 @@ import com.intellij.psi.search.searches.OverridingMethodsSearch
 import com.intellij.psi.search.searches.ReferencesSearch
 import com.intellij.psi.util.PsiTreeUtil
 import com.intellij.refactoring.rename.RenameProcessor
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.Serializable
 
@@ -204,22 +205,37 @@ class RenameMethodTransformation(
     }
 
     @Serializable
-    private data class MethodNameSuggestions(val suggestions: List<String>)
+    private data class MethodFamilyRenaming(val familyKey: String, val suggestions: List<String>)
 
-    private data class MethodContext(
+    @Serializable
+    private data class MethodRenameSuggestions(val renamings: List<MethodFamilyRenaming>)
+
+    private data class MethodFamilyContext(
+        val familyKey: String,
         val methodName: String,
         val methodBody: String?,
-        val className: String?
+        val className: String?,
     )
 
     /**
      * Represents a family of overloaded methods (same name, same containing class).
+     *
+     * [familyKey] uniquely identifies the family within a batched LLM prompt so the
+     * model can echo it back per-entry. Format: `<classFqn>#<methodName>[<static|instance>]`.
+     * The `[static]/[instance]` tag is required because a class can hold a static and
+     * an instance method with the same name — these are separate families and must
+     * not collide on the key.
      */
     private data class OverloadFamily(
         val methodName: String,
         val containingClass: PsiClass,
-        val methods: List<PsiMethod>
+        val methods: List<PsiMethod>,
+        val isStatic: Boolean,
+        val classFqn: String,
     ) {
+        val familyKey: String =
+            "$classFqn#$methodName[${if (isStatic) "static" else "instance"}]"
+
         /**
          * Returns a representative method for generating rename suggestions.
          * Prefers methods with bodies (non-abstract) for better context.
@@ -243,12 +259,15 @@ class RenameMethodTransformation(
             )
         }
 
-        return grouped.map { (_, methodsInFamily) ->
+        return grouped.map { (key, methodsInFamily) ->
+            val (classFqn, methodName, isStatic) = key
             val representative = methodsInFamily.first()
             OverloadFamily(
-                methodName = representative.name,
+                methodName = methodName,
                 containingClass = representative.containingClass!!,
-                methods = methodsInFamily
+                methods = methodsInFamily,
+                isStatic = isStatic,
+                classFqn = classFqn,
             )
         }
     }
@@ -314,48 +333,120 @@ class RenameMethodTransformation(
     }
 
     /**
-     * Generates rename suggestions for overload families using LLM.
+     * Generates rename suggestions for overload families using a batched LLM call.
      * Returns the same suggestions for all methods in a family.
      */
     private suspend fun generateRenamesForFamilies(families: List<OverloadFamily>): Map<OverloadFamily, List<String>> {
+        val batchRenamings = generateNewMethodNames(families)
         return families.associateWith { family ->
-            // Generate suggestions based on the representative method
-            val representative = family.getRepresentative()
-            generateNewMethodNames(representative)
+            val renaming = batchRenamings.find { it.familyKey == family.familyKey }
+            renaming?.suggestions?.let { buildSuggestionList(it) } ?: emptyList()
         }
     }
 
-    private suspend fun generateNewMethodNames(method: PsiMethod, count: Int = DEFAULT_SUGGESTED_NAMES_SIZE): List<String> {
-        // Extract all PSI data in a read action before building the prompt
-        val context = readAction {
-            MethodContext(
-                methodName = method.name,
-                methodBody = method.body?.text,
-                className = method.containingClass?.name
-            )
+    /**
+     * Splits [families] into chunks so a single transient LLM failure (timeout,
+     * malformed JSON, token-budget overflow on huge files) doesn't lose suggestions
+     * for the entire file. Files with <= LLM_BATCH_SIZE families still produce
+     * one LLM call.
+     */
+    private suspend fun generateNewMethodNames(
+        families: List<OverloadFamily>,
+        count: Int = DEFAULT_SUGGESTED_NAMES_SIZE,
+    ): List<MethodFamilyRenaming> {
+        if (families.isEmpty()) return emptyList()
+
+        val batches = families.chunked(LLM_BATCH_SIZE)
+        if (batches.size > 1) {
+            logger.info("  ↳ Splitting ${families.size} families into ${batches.size} LLM batches of up to $LLM_BATCH_SIZE")
         }
 
-        val methodRenamePrompt = prompt("method-rename-prompt") {
+        val combined = mutableListOf<MethodFamilyRenaming>()
+        for ((index, batch) in batches.withIndex()) {
+            val partial = generateBatchWithRetry(
+                families = batch,
+                count = count,
+                batchLabel = "${index + 1}/${batches.size}",
+            )
+            combined.addAll(partial)
+        }
+        return combined
+    }
+
+    /**
+     * Calls the LLM for a single batch of families, retrying transient errors with
+     * exponential backoff. Returns an empty list if every retry fails — the caller's
+     * per-family loop then skips those families (no rename, no memory write) instead
+     * of failing the whole transformation, so other batches and other files still
+     * progress.
+     *
+     * Rethrows [ProcessCanceledException] per IntelliJ contract.
+     */
+    private suspend fun generateBatchWithRetry(
+        families: List<OverloadFamily>,
+        count: Int,
+        batchLabel: String,
+    ): List<MethodFamilyRenaming> {
+        val contexts = readAction {
+            families.map { family ->
+                val rep = family.getRepresentative()
+                MethodFamilyContext(
+                    familyKey = family.familyKey,
+                    methodName = rep.name,
+                    methodBody = rep.body?.text,
+                    className = rep.containingClass?.name,
+                )
+            }
+        }
+
+        val methodRenamePrompt = prompt("method-rename-batch-prompt") {
             system {
                 +"You are an agent that proposes semantically similar Java method names."
                 +"Your output is used in a metamorphic transformation pipeline."
                 +"Your output will be parsed into JSON; strictly follow the required structure."
             }
             user {
-                +"The current method name is: ${context.methodName}"
-                +"The method body is: ${context.methodBody}"
-                +"The containing class name is: ${context.className}"
-                +"Return a JSON object with field 'suggestions' which is an ordered array of $count Java identifiers, from most to least fitting."
-                +"Every suggestion must be a valid Java identifier and semantically similar to the original name."
+                +"Generate $count semantically similar name suggestions for each of the following Java methods:"
+                +""
+                for (ctx in contexts) {
+                    +"Method (key=${ctx.familyKey}): ${ctx.methodName}"
+                    +"  Containing class: ${ctx.className}"
+                    +"  Body: ${ctx.methodBody}"
+                    +""
+                }
+                +"Return a JSON object with field 'renamings' which is an array of objects."
+                +"Each object must have 'familyKey' (echoed verbatim from the input) and 'suggestions' (an ordered array of $count valid Java identifiers, from most to least fitting)."
+                +"Example schema: {\"renamings\": [{\"familyKey\": \"<key>\", \"suggestions\": [\"newName1\", \"newName2\", ...]}]}"
+                +"Every suggestion must be a valid Java identifier and semantically similar to the original method name."
+                +"IMPORTANT: The 'familyKey' field MUST exactly match the key from the input (do not invent new keys, do not reformat)."
             }
         }
 
         val llm = LLM.fromGrazie(OpenAIModels.Chat.GPT5Mini)
-        val result = llm.structuredRequest<MethodNameSuggestions>(
-            prompt = methodRenamePrompt
-        )
 
-        return if (result != null) buildSuggestionList(result.suggestions) else emptyList()
+        var lastError: Throwable? = null
+        for (attempt in 1..LLM_MAX_ATTEMPTS) {
+            try {
+                val result = llm.structuredRequest<MethodRenameSuggestions>(prompt = methodRenamePrompt)
+                return result?.renamings ?: emptyList()
+            } catch (e: ProcessCanceledException) {
+                throw e
+            } catch (e: Exception) {
+                lastError = e
+                logger.warn("    ⚠ LLM call for method batch $batchLabel failed (attempt $attempt/$LLM_MAX_ATTEMPTS): ${e.message}")
+                if (attempt < LLM_MAX_ATTEMPTS) {
+                    delay(retryBackoffMillis(attempt))
+                }
+            }
+        }
+        logger.warn("    ✗ LLM call for method batch $batchLabel exhausted $LLM_MAX_ATTEMPTS attempts; skipping batch (last error: ${lastError?.message})")
+        return emptyList()
+    }
+
+    private fun retryBackoffMillis(attempt: Int): Long {
+        // 4s, 8s, 16s, ... capped at LLM_RETRY_BACKOFF_CAP_MILLIS
+        val base = LLM_RETRY_BACKOFF_BASE_MILLIS shl (attempt - 1).coerceAtLeast(0)
+        return base.coerceAtMost(LLM_RETRY_BACKOFF_CAP_MILLIS)
     }
 
     private fun buildSuggestionList(rawSuggestions: List<String>): List<String> {
@@ -1044,5 +1135,14 @@ class RenameMethodTransformation(
         )
 
         private const val DEFAULT_SUGGESTED_NAMES_SIZE = 5
+
+        // Robustness knobs for the LLM batch call.
+        // LLM_BATCH_SIZE is smaller than the variable transformation's value (40)
+        // because each entry in the method prompt embeds a method body, so token
+        // budget per entry is materially higher.
+        private const val LLM_BATCH_SIZE = 30
+        private const val LLM_MAX_ATTEMPTS = 3
+        private const val LLM_RETRY_BACKOFF_BASE_MILLIS = 4_000L
+        private const val LLM_RETRY_BACKOFF_CAP_MILLIS = 12_000L
     }
 }
