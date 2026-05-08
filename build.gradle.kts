@@ -260,5 +260,30 @@ intellijPlatformTesting {
                 )
             }
         }
+
+        // Custom task for analyzing Java file dependencies
+        register("analyzeDependencies") {
+            task {
+                // Program arguments for the analysis
+                args(listOf("analyze-dependencies"))
+
+                // Pass parameters via system properties
+                val projectPath = project.findProperty("analyze.projectPath") as? String ?: ""
+                val seedFiles = project.findProperty("analyze.seedFiles") as? String ?: ""
+                val outputFile = project.findProperty("analyze.outputFile") as? String ?: ""
+                val depth = project.findProperty("analyze.depth") as? String ?: "1"
+
+                // JVM arguments
+                jvmArgs(
+                    "-Xmx8G",
+                    "-Djava.awt.headless=true",
+                    "--add-exports", "java.base/jdk.internal.vm=ALL-UNNAMED",
+                    "-Danalyze.projectPath=${projectPath}",
+                    "-Danalyze.seedFiles=${seedFiles}",
+                    "-Danalyze.outputFile=${outputFile}",
+                    "-Danalyze.depth=${depth}",
+                )
+            }
+        }
     }
 }
