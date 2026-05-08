@@ -4,10 +4,10 @@ import ai.koog.prompt.dsl.prompt
 import ai.koog.prompt.executor.clients.openai.OpenAIModels
 import com.github.pderakhshanfar.codecocoonplugin.common.LLM
 import com.github.pderakhshanfar.codecocoonplugin.components.transformations.IntelliJAwareTransformation.Companion.withReadAction
+import com.github.pderakhshanfar.codecocoonplugin.components.transformations.IntelliJAwareTransformation.Companion.withSmartReadAction
 import com.github.pderakhshanfar.codecocoonplugin.components.transformations.SelfManagedTransformation
 import com.github.pderakhshanfar.codecocoonplugin.executor.TransformationResult
 import com.github.pderakhshanfar.codecocoonplugin.intellij.logging.withStdout
-import com.github.pderakhshanfar.codecocoonplugin.intellij.psi.allowedAnnotationsOnly
 import com.github.pderakhshanfar.codecocoonplugin.intellij.psi.document
 import com.github.pderakhshanfar.codecocoonplugin.intellij.vfs.relativeToRootOrAbsPath
 import com.github.pderakhshanfar.codecocoonplugin.java.JavaTransformation
@@ -15,7 +15,7 @@ import com.github.pderakhshanfar.codecocoonplugin.memory.Memory
 import com.github.pderakhshanfar.codecocoonplugin.memory.PsiSignatureGenerator
 import com.github.pderakhshanfar.codecocoonplugin.transformation.requireOrDefault
 import com.intellij.openapi.application.ApplicationManager
-import com.intellij.openapi.application.readAction
+import com.intellij.openapi.application.smartReadAction
 import com.intellij.openapi.diagnostic.thisLogger
 import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.progress.ProcessCanceledException
@@ -78,7 +78,11 @@ class RenameClassTransformation(
             val document = withReadAction { psiFile.document() }
             val modifiedFiles = mutableSetOf<PsiFile>()
             val value = if (document != null) {
-                val eligibleClasses: List<PsiClass> = withReadAction {
+                // Smart-read: findAllValidClasses calls ReferencesSearch.search(cls)
+                // and fileIndex.isInTestSourceContent(...) for every class — both
+                // hit the stub index and would throw IndexNotReadyException if a
+                // prior file's rename pushed us into dumb mode.
+                val eligibleClasses: List<PsiClass> = withSmartReadAction(psiFile.project) {
                     findAllValidClasses(
                         psiFile = psiFile,
                         annotationFilterMode = annotationFilterMode,
@@ -225,7 +229,11 @@ class RenameClassTransformation(
     }
 
     private suspend fun generateNewClassNames(psiClass: PsiClass, count: Int = DEFAULT_SUGGESTED_NAMES_SIZE): List<String> {
-        val context = readAction {
+        // Smart-read: psiClass.allFields walks the inheritance chain and
+        // resolves super references via JavaPsiFacade.findClass -> stub index.
+        // A plain readAction { ... } here can land mid-reindex (after prior
+        // files' renames invalidated the index) and throw IndexNotReadyException.
+        val context = smartReadAction(psiClass.project) {
             val type = when {
                 psiClass.isInterface -> "interface"
                 psiClass.isEnum -> "enum class"
