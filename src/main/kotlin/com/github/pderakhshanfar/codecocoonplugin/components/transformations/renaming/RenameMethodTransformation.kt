@@ -85,8 +85,14 @@ class RenameMethodTransformation(
             val document = IntelliJAwareTransformation.withReadAction { psiFile.document() }
             val modifiedFiles = mutableSetOf<PsiFile>()
             val value = if (document != null) {
-                // Find all valid method families (already grouped and filtered)
-                val overloadFamilies: List<OverloadFamily> = IntelliJAwareTransformation.withReadAction {
+                // Find all valid method families (already grouped and filtered).
+                // Smart-read: findAllValidMethodFamilies calls method.findSuperMethods(),
+                // psiClass.supers, and ReferencesSearch.search(method) — all hit the
+                // stub index. After earlier files' renames the IDE often drops back
+                // into dumb mode while reindexing; a plain withReadAction { ... } here
+                // would throw IndexNotReadyException as soon as the override-filter
+                // loop reached findSuperMethods().
+                val overloadFamilies: List<OverloadFamily> = IntelliJAwareTransformation.withSmartReadAction(psiFile.project) {
                     findAllValidMethodFamilies(
                         psiFile = psiFile,
                         annotationFilterMode = annotationFilterMode,
