@@ -309,13 +309,24 @@ class RenameClassTransformation(
             val oldName = psiClass.name ?: return null
             // Creating RenameProcessor requires read access for PSI validation
             val renameProcessor = withReadAction {
-                RenameProcessor(
+                val processor = RenameProcessor(
                     /* project = */ project,
                     /* element = */ psiClass,
                     /* newName = */ newName,
                     /* isSearchInComments= */ searchInComments,
                     /* isSearchTextOccurrences = */ false
                 )
+
+                if (processor.findUsages().isEmpty()) {
+                    return@withReadAction null
+                }
+
+                processor
+            }
+
+            if (renameProcessor == null) {
+                logger.info("      ⊘ No usages found. Skipping.")
+                return null
             }
 
             // Snapshot modified files BEFORE run(): findUsages() must run on

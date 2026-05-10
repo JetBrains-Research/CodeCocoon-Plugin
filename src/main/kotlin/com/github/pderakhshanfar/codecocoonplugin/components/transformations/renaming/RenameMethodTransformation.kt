@@ -509,6 +509,11 @@ class RenameMethodTransformation(
                     processor.addElement(extra, newName)
                 }
 
+                if (processor.findUsages().isEmpty()) {
+                    return@withReadAction null
+                }
+
+
                 // Pre-emptively attach transitive overriders. RenameProcessor's implicit
                 // expansion via RenameJavaMethodProcessor.prepareRenaming +
                 // OverridingMethodsSearch is unreliable when several same-name overloads
@@ -555,6 +560,10 @@ class RenameMethodTransformation(
                 processor
             }
 
+            if (renameProcessor == null) {
+                logger.info("      ⊘ No usages found. Skipping.")
+                return null
+            }
             // Snapshot modified files BEFORE run(): findUsages() must run on
             // the pre-rename PSI to return the references that will actually
             // be rewritten. After run() the seed element has been renamed and
