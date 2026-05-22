@@ -13,11 +13,5 @@
     <extensions defaultExtensionNs="com.intellij">
         <appStarter implementation="com.github.pderakhshanfar.codecocoonplugin.appstarter.HeadlessModeStarter"
         id="codecocoon"/>
-        <appStarter implementation="com.github.pderakhshanfar.codecocoonplugin.appstarter.TransformTextsStarter"
-        id="transform-texts"/>
-        <appStarter implementation="com.github.pderakhshanfar.codecocoonplugin.appstarter.RewriteProblemStatementStarter"
-        id="rewrite-problem-statement"/>
-        <appStarter implementation="com.github.pderakhshanfar.codecocoonplugin.appstarter.FixHunksStarter"
-        id="agent-fix-hunks"/>
     </extensions>
 </idea-plugin>
