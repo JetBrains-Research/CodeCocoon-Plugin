@@ -30,6 +30,7 @@ import java.util.function.Predicate
 
 /**
  * Responsible for configuring JVM-based projects in a headless environment.
+ * Updated to fix indexing for Gradle projects.
  */
 class JvmProjectConfigurator {
     private val projectResolver = JvmProjectResolver()
@@ -61,11 +62,16 @@ private class JvmProjectResolver {
     }
 
     private fun getProjectConfigurator(project: Project): CommandLineInspectionProjectConfigurator {
-        return if (MavenProjectsManager.getInstance(project).isMavenizedProject) {
-            logger.info("Project ${project.name} considered to be maven")
+        // Check for pom.xml file directly instead of relying on MavenProjectsManager
+        // which might not have discovered the Maven project yet
+        val projectPath = project.basePath
+        val hasPomXml = projectPath != null && java.io.File(projectPath, "pom.xml").exists()
+
+        return if (hasPomXml) {
+            logger.info("Project ${project.name} considered to be maven (found pom.xml)")
             MavenCommandLineInspectionProjectConfigurator()
         } else {
-            logger.info("Project ${project.name} considered to be gradle")
+            logger.info("Project ${project.name} considered to be gradle (no pom.xml)")
             GradleCommandLineProjectConfigurator()
         }
     }
@@ -184,26 +190,26 @@ private object ProjectApplicationUtils {
             if (mavenManager.projects.size == 0) {
                 logger.warn("Maven import may have failed - no modules found")
             }
-
-            // Wait for indexing to complete
-            logger.info("Waiting for indexing to complete...")
-            val dumbService = DumbService.getInstance(project)
-            var indexAttempts = 0
-            while (dumbService.isDumb && indexAttempts < 120) {
-                Thread.sleep(1000)
-                indexAttempts++
-            }
-            if (dumbService.isDumb) {
-                logger.warn("Indexing did not complete in time")
-            } else {
-                logger.info("Indexing completed")
-            }
-
-            // Extra buffer for source roots to register
-            logger.info("Waiting for source roots to be registered...")
-            Thread.sleep(5000)
-            logger.info("Project resolution complete")
         }
+
+        // Wait for indexing to complete (for both Maven and Gradle)
+        logger.info("Waiting for indexing to complete...")
+        val dumbService = DumbService.getInstance(project)
+        var indexAttempts = 0
+        while (dumbService.isDumb && indexAttempts < 120) {
+            Thread.sleep(1000)
+            indexAttempts++
+        }
+        if (dumbService.isDumb) {
+            logger.warn("Indexing did not complete in time")
+        } else {
+            logger.info("Indexing completed")
+        }
+
+        // Extra buffer for source roots to register
+        logger.info("Waiting for source roots to be registered...")
+        Thread.sleep(5000)
+        logger.info("Project resolution complete")
 
         logger.info("Project ${project.name} was successfully resolved with configurator ${configurator.name}!")
     }

@@ -63,7 +63,9 @@ class DependencyAnalyzer(private val project: Project) {
                 null
             } else {
                 logger.info("[DependencyAnalyzer]   Virtual file found: ${virtualFile.path}")
-                val psiFile = PsiManager.getInstance(project).findFile(virtualFile)
+                val psiFile = com.intellij.openapi.application.ApplicationManager.getApplication().runReadAction<PsiFile?> {
+                    PsiManager.getInstance(project).findFile(virtualFile)
+                }
                 if (psiFile == null) {
                     logger.warn("[DependencyAnalyzer]   PSI file is null!")
                 } else {
@@ -111,7 +113,9 @@ class DependencyAnalyzer(private val project: Project) {
 
                     // Add to queue for further traversal if we haven't reached max depth
                     if (currentDepth + 1 < depth) {
-                        val depPsiFile = PsiManager.getInstance(project).findFile(depVirtualFile)
+                        val depPsiFile = com.intellij.openapi.application.ApplicationManager.getApplication().runReadAction<PsiFile?> {
+                            PsiManager.getInstance(project).findFile(depVirtualFile)
+                        }
                         if (depPsiFile != null) {
                             queue.add(Pair(depPsiFile, currentDepth + 1))
                         }
@@ -165,66 +169,69 @@ class DependencyAnalyzer(private val project: Project) {
 
         val javaPsiFile = psiFile as PsiJavaFile
 
-        // 1. Analyze import statements
-        val importCount = javaPsiFile.importList?.allImportStatements?.size ?: 0
-        logger.info("[DependencyAnalyzer] Found $importCount imports")
+        // All PSI access must be wrapped in a read action
+        com.intellij.openapi.application.ApplicationManager.getApplication().runReadAction {
+            // 1. Analyze import statements
+            val importCount = javaPsiFile.importList?.allImportStatements?.size ?: 0
+            logger.info("[DependencyAnalyzer] Found $importCount imports")
 
-        javaPsiFile.importList?.allImportStatements?.forEach { importStatement ->
-            val importedClassName = when (importStatement) {
-                is PsiImportStatement -> importStatement.qualifiedName
-                is PsiImportStaticStatement -> importStatement.importReference?.qualifiedName
-                else -> null
-            }
+            javaPsiFile.importList?.allImportStatements?.forEach { importStatement ->
+                val importedClassName = when (importStatement) {
+                    is PsiImportStatement -> importStatement.qualifiedName
+                    is PsiImportStaticStatement -> importStatement.importReference?.qualifiedName
+                    else -> null
+                }
 
-            if (importedClassName != null) {
-                logger.info("[DependencyAnalyzer] Processing import: $importedClassName")
-                if (!isStandardLibrary(importedClassName)) {
-                    val classFile = findClassFile(importedClassName)
-                    if (classFile != null) {
-                        logger.info("[DependencyAnalyzer]   -> Found class file: ${classFile.path}")
-                        dependencies.add(classFile)
+                if (importedClassName != null) {
+                    logger.info("[DependencyAnalyzer] Processing import: $importedClassName")
+                    if (!isStandardLibrary(importedClassName)) {
+                        val classFile = findClassFile(importedClassName)
+                        if (classFile != null) {
+                            logger.info("[DependencyAnalyzer]   -> Found class file: ${classFile.path}")
+                            dependencies.add(classFile)
+                        } else {
+                            logger.info("[DependencyAnalyzer]   -> Class file not found")
+                        }
                     } else {
-                        logger.info("[DependencyAnalyzer]   -> Class file not found")
+                        logger.info("[DependencyAnalyzer]   -> Skipped (standard library)")
                     }
-                } else {
-                    logger.info("[DependencyAnalyzer]   -> Skipped (standard library)")
                 }
             }
-        }
 
-        // 2. Analyze class references in the code
-        val classRefCount = PsiTreeUtil.findChildrenOfType(javaPsiFile, PsiJavaCodeReferenceElement::class.java).size
-        logger.info("[DependencyAnalyzer] Found $classRefCount class references")
+            // 2. Analyze class references in the code
+            val classRefCount = PsiTreeUtil.findChildrenOfType(javaPsiFile, PsiJavaCodeReferenceElement::class.java).size
+            logger.info("[DependencyAnalyzer] Found $classRefCount class references")
 
-        PsiTreeUtil.findChildrenOfType(javaPsiFile, PsiJavaCodeReferenceElement::class.java).forEach { reference ->
-            val resolved = reference.resolve()
-            if (resolved is PsiClass) {
-                val qualifiedName = resolved.qualifiedName
-                if (qualifiedName != null && !isStandardLibrary(qualifiedName)) {
-                    resolved.containingFile?.virtualFile?.let { vFile ->
-                        // Only include files within the project
-                        if (vFile.path.startsWith(projectBasePath)) {
-                            dependencies.add(vFile)
+            PsiTreeUtil.findChildrenOfType(javaPsiFile, PsiJavaCodeReferenceElement::class.java).forEach { reference ->
+                val resolved = reference.resolve()
+                if (resolved is PsiClass) {
+                    val qualifiedName = resolved.qualifiedName
+                    if (qualifiedName != null && !isStandardLibrary(qualifiedName)) {
+                        resolved.containingFile?.virtualFile?.let { vFile ->
+                            // Only include files within the project
+                            if (vFile.path.startsWith(projectBasePath)) {
+                                dependencies.add(vFile)
+                            }
                         }
                     }
                 }
             }
-        }
 
-        // 3. Analyze method call expressions
-        val methodCallCount = PsiTreeUtil.findChildrenOfType(javaPsiFile, PsiMethodCallExpression::class.java).size
-        logger.info("[DependencyAnalyzer] Found $methodCallCount method calls")
+            // 3. Analyze method call expressions
+            val methodCallCount = PsiTreeUtil.findChildrenOfType(javaPsiFile, PsiMethodCallExpression::class.java).size
+            logger.info("[DependencyAnalyzer] Found $methodCallCount method calls")
 
-        PsiTreeUtil.findChildrenOfType(javaPsiFile, PsiMethodCallExpression::class.java).forEach { methodCall ->
-            val resolvedMethod = methodCall.resolveMethod()
-            if (resolvedMethod != null) {
-                val containingClass = resolvedMethod.containingClass
-                if (containingClass != null) {
-                    val qualifiedName = containingClass.qualifiedName
-                    if (qualifiedName != null && !isStandardLibrary(qualifiedName)) {
-                        resolvedMethod.containingFile?.virtualFile?.let { vFile ->
-                            if (vFile.path.startsWith(projectBasePath)) {
-                                dependencies.add(vFile)
+            PsiTreeUtil.findChildrenOfType(javaPsiFile, PsiMethodCallExpression::class.java).forEach { methodCall ->
+                val resolvedMethod = methodCall.resolveMethod()
+                if (resolvedMethod != null) {
+                    val containingClass = resolvedMethod.containingClass
+                    if (containingClass != null) {
+                        val qualifiedName = containingClass.qualifiedName
+                        if (qualifiedName != null && !isStandardLibrary(qualifiedName)) {
+                            resolvedMethod.containingFile?.virtualFile?.let { vFile ->
+                                if (vFile.path.startsWith(projectBasePath)) {
+                                    dependencies.add(vFile)
+                                }
                             }
                         }
                     }
@@ -255,10 +262,12 @@ class DependencyAnalyzer(private val project: Project) {
      * Finds the VirtualFile for a given fully qualified class name.
      */
     private fun findClassFile(qualifiedName: String): VirtualFile? {
-        val javaPsiFacade = JavaPsiFacade.getInstance(project)
-        val searchScope = GlobalSearchScope.projectScope(project)
+        return com.intellij.openapi.application.ApplicationManager.getApplication().runReadAction<VirtualFile?> {
+            val javaPsiFacade = JavaPsiFacade.getInstance(project)
+            val searchScope = GlobalSearchScope.projectScope(project)
 
-        val psiClass = javaPsiFacade.findClass(qualifiedName, searchScope)
-        return psiClass?.containingFile?.virtualFile
+            val psiClass = javaPsiFacade.findClass(qualifiedName, searchScope)
+            psiClass?.containingFile?.virtualFile
+        }
     }
 }
