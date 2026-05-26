@@ -21,16 +21,19 @@ import com.intellij.psi.PsiElement
 import com.intellij.psi.PsiFile
 import com.intellij.psi.PsiJavaFile
 import com.intellij.psi.PsiMethod
+import com.intellij.psi.PsiParserFacade
 import com.intellij.psi.PsiRecursiveElementVisitor
+import kotlin.math.abs
 
 /**
- * Reorders methods in a class in a *reverse alphabetic order* (Z -> A).
+ * Reorders methods in a class in a *random order*, attempting to maximize
+ * displacement from their original positions.
  */
 class ReorderClassMethodsTransformation(
     override val config: Map<String, Any>
 ) : JavaTransformation, SelfManagedTransformation() {
     override val id: String = ID
-    override val description: String = "Reorders methods in a class in reverse alphabetic order (Z -> A)"
+    override val description: String = "Reorders methods in a class in random order, maximizing displacement"
     private val logger = thisLogger().withStdout()
 
     override fun apply(
@@ -109,9 +112,12 @@ class ReorderClassMethodsTransformation(
                                 continue
                             }
 
-                            // add sorted methods into class
+                            // add sorted methods into class with proper spacing
+                            val whitespace = PsiParserFacade.getInstance(project)
+                                .createWhiteSpaceFromText("\n\n")
                             for ((_, copy) in copies) {
                                 psiClass.addBefore(copy!!, rBrace)
+                                psiClass.addBefore(whitespace.copy(), rBrace)
                             }
                             // remove original methods
                             for (method in sortedMethods) {
@@ -130,9 +136,13 @@ class ReorderClassMethodsTransformation(
                         }
                     }
 
+                    // Commit PSI changes and unblock document before saving
+                    val psiDocManager = PsiDocumentManager.getInstance(project)
+                    psiDocManager.doPostponedOperationsAndUnblockDocument(psiFile.document()!!)
+                    psiDocManager.commitAllDocuments()
+
                     val document = psiFile.document()
                     if (document != null) {
-                        PsiDocumentManager.getInstance(project).commitDocument(document)
                         FileDocumentManager.getInstance().saveDocument(document)
                     } else {
                         logger.warn("  ⚠ Could not get document for ${virtualFile.name}; changes may not be flushed to disk")
@@ -158,11 +168,41 @@ class ReorderClassMethodsTransformation(
     }
 
     /**
-     * Returns methods in the desired order. Reverse-alphabetical (Z → A) for now.
-     * Future config params will be wired here to switch strategies.
+     * Returns methods in a random order, attempting to maximize displacement from
+     * original positions. Tries multiple random permutations and picks the one with
+     * the highest total displacement score.
      */
-    private fun reorderMethods(methods: List<PsiMethod>): List<PsiMethod> =
-        methods.sortedByDescending { it.name }
+    private fun reorderMethods(methods: List<PsiMethod>): List<PsiMethod> {
+        val n = methods.size
+        if (n < 2) return methods
+
+        // Try multiple random permutations and pick the one with maximum displacement
+        var bestReordering = methods.shuffled()
+        var bestScore = calculateDisplacementScore(methods, bestReordering)
+
+        // Try 10 permutations and keep the best
+        repeat(10) {
+            val candidate = methods.shuffled()
+            val score = calculateDisplacementScore(methods, candidate)
+            if (score > bestScore) {
+                bestScore = score
+                bestReordering = candidate
+            }
+        }
+
+        return bestReordering
+    }
+
+    /**
+     * Calculates total displacement score for a permutation.
+     * Higher score means methods moved farther from original positions.
+     */
+    private fun calculateDisplacementScore(original: List<PsiMethod>, reordered: List<PsiMethod>): Int {
+        return original.indices.sumOf { i ->
+            val newIndex = reordered.indexOf(original[i])
+            abs(newIndex - i)
+        }
+    }
 
     private fun collectAllClasses(psiFile: PsiFile): List<PsiClass> {
         val classes = mutableListOf<PsiClass>()
