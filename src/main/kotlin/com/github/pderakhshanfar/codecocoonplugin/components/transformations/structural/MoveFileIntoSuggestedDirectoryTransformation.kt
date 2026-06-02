@@ -1,9 +1,10 @@
-package com.github.pderakhshanfar.codecocoonplugin.components.transformations
+package com.github.pderakhshanfar.codecocoonplugin.components.transformations.structural
 
 import com.github.pderakhshanfar.codecocoonplugin.common.TransformationStepFailed
 import com.github.pderakhshanfar.codecocoonplugin.components.transformations.IntelliJAwareTransformation.Companion.withReadAction
-import com.github.pderakhshanfar.codecocoonplugin.components.transformations.MoveFileIntoSuggestedDirectoryTransformation.Companion.withAI
-import com.github.pderakhshanfar.codecocoonplugin.components.transformations.MoveFileIntoSuggestedDirectoryTransformation.Companion.withConfig
+import com.github.pderakhshanfar.codecocoonplugin.components.transformations.SelfManagedTransformation
+import com.github.pderakhshanfar.codecocoonplugin.components.transformations.structural.MoveFileIntoSuggestedDirectoryTransformation.Companion.withAI
+import com.github.pderakhshanfar.codecocoonplugin.components.transformations.structural.MoveFileIntoSuggestedDirectoryTransformation.Companion.withConfig
 import com.github.pderakhshanfar.codecocoonplugin.executor.TransformationResult
 import com.github.pderakhshanfar.codecocoonplugin.intellij.logging.withStdout
 import com.github.pderakhshanfar.codecocoonplugin.intellij.psi.declarations
@@ -15,6 +16,7 @@ import com.github.pderakhshanfar.codecocoonplugin.transformation.requireOrDefaul
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.command.WriteCommandAction
 import com.intellij.openapi.diagnostic.thisLogger
+import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.progress.ProcessCanceledException
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.roots.ProjectFileIndex
@@ -25,9 +27,13 @@ import com.intellij.psi.search.searches.ReferencesSearch
 import com.intellij.refactoring.move.MoveCallback
 import com.intellij.refactoring.move.moveFilesOrDirectories.MoveFilesOrDirectoriesProcessor
 import com.intellij.usageView.UsageInfo
+import com.intellij.util.containers.MultiMap
 import kotlinx.coroutines.runBlocking
 import java.nio.file.Paths
 import java.util.concurrent.CompletableFuture
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.TimeoutException
+import kotlin.collections.iterator
 
 
 /**
@@ -108,7 +114,7 @@ class MoveFileIntoSuggestedDirectoryTransformation private constructor(
             val suggestedDirectories = result.getOrThrow()
             logger.info("    • Received ${suggestedDirectories.size} directory suggestions")
 
-            return tryToMoveFileIntoSuggestedDirectory(
+            tryToMoveFileIntoSuggestedDirectory(
                 project = psiFile.project,
                 fileToMove = psiFile,
                 suggestions = suggestedDirectories,
@@ -193,6 +199,10 @@ class MoveFileIntoSuggestedDirectoryTransformation private constructor(
         val projectRoot = project.basePath
             ?: return TransformationResult.Failure("Project root not found")
 
+        val currentParent = withReadAction {
+            Paths.get(fileToMove.virtualFile.parent.path).normalize().toString()
+        }
+
         logger.info("  ⏲ Attempting to move $filename into suggestions...")
         for ((index, suggestionPath) in suggestions.withIndex()) {
             logger.info("    ↳ Attempting suggestion #${index + 1}: '$suggestionPath'")
@@ -206,6 +216,13 @@ class MoveFileIntoSuggestedDirectoryTransformation private constructor(
             } else {
                 // the suggested path is already absolute, no need to prepend project root
                 suggestionPath
+            }
+
+            // skip suggestions pointing at the file's current package — would be a no-op move
+            // and would pollute memory with a self-pointing entry.
+            if (Paths.get(suggestion).normalize().toString() == currentParent) {
+                logger.warn("    ⚠ Skipping suggestion #${index + 1}: '$suggestion' equals the current package/directory of '$filename'")
+                continue
             }
 
             val suggestedDirectory = WriteCommandAction.runWriteCommandAction<VirtualFile>(project) {
@@ -225,7 +242,13 @@ class MoveFileIntoSuggestedDirectoryTransformation private constructor(
                     searchInNonJavaFiles = false,
                     moveCallback = {
                         // overriding `refactoringCompleted` method
+                        logger.info("    • Move processor called `moveCallback`: setting `successfullyMoved=true`")
                         successfullyMoved.complete(true)
+                    },
+                    onConflictsFoundCallback = {
+                        // set `successfullyMoved` to false -> unsuccessful/aborted move operation
+                        logger.warn("    ✗ Move processor called `onConflictsFoundCallback`: setting `successfullyMoved=false`")
+                        successfullyMoved.complete(false)
                     },
                     prepareSuccessfulCallback = { /* no-op */ },
                 )
@@ -234,17 +257,39 @@ class MoveFileIntoSuggestedDirectoryTransformation private constructor(
             try {
                 ApplicationManager.getApplication().invokeAndWait {
                     PsiDocumentManager.getInstance(project).commitAllDocuments()
+                    logger.info("    ↳ Move processor starts running...")
                     processor.run()
+                    logger.info("    • Move processor finished running")
+                    // Lock in PSI/document/disk state immediately so subsequent
+                    // transformations (and the final project close) don't trigger
+                    // close-time hooks whose behaviour depends on accumulated
+                    // unflushed state — a move propagates package declarations and
+                    // import updates across every referencing file, the same cascade
+                    // pattern as a rename.
+                    PsiDocumentManager.getInstance(project).commitAllDocuments()
+                    FileDocumentManager.getInstance().saveAllDocuments()
                 }
             } catch (err: ProcessCanceledException) {
                 // NOTE: `ProcessCanceledException` cannot be silenced, see its Javadoc
                 throw err
             } catch (err: Exception) {
-                logger.error("Failed to move '$filename' into suggestion #${index + 1}", err)
+                logger.error("    ✗ Suggestion #${index + 1} for '$filename' failed: ${err.message}; trying next suggestion", err)
+                // unblock the join below so the loop can advance to the next suggestion
+                successfullyMoved.complete(false)
             }
 
             // finish when moved successfully into the current suggestion
-            if (successfullyMoved.join()) {
+            logger.info("    ↳ Awaiting completion of move operation (i.e., `successfullyMoved.get(3min)`)...")
+
+            val moveResult = try {
+                successfullyMoved.get(3, TimeUnit.MINUTES)
+            } catch (_: TimeoutException) {
+                logger.warn("    ⚠️ [TIMEOUT] Suggestion #${index + 1} for '$filename' timed out after 3 minutes; moving on to next suggestion")
+                false
+            }
+
+            logger.info("    ↳ Move operation for suggestion #${index + 1} for '$filename' ${if (moveResult) "succeeded" else "failed"}: '$suggestedDirectory'")
+            if (moveResult) {
                 val (filesModified, usageSummary) = withReadAction {
                     val usages = processor.foundUsages
 
@@ -283,10 +328,15 @@ class MoveFileIntoSuggestedDirectoryTransformation private constructor(
             }
         }
 
-        // no suggestions fit
-        logger.info("    ✗ Failed to move $filename: None of ${suggestions.size} suggestions fit")
-        return TransformationResult.Failure(
-            "Failed to move $filename into any of ${suggestions.size} suggested directories:\n${suggestions.joinToString("\n") { "  - $it" }}")
+        // No suggestion fit — every iteration above set `successfullyMoved` to false
+        // (conflict callback / exception in processor.run() / 3-minute timeout). Treat this
+        // as Skipped rather than Failure: the input file is well-formed, suggestions were
+        // obtained, the move processor just rejected every target. Genuine failures
+        // (non-Java input, missing project root, suggestion-API error) still return Failure
+        // upstream of this loop.
+        logger.info("    ⊘ Skipped moving $filename: move processor rejected all ${suggestions.size} suggestion(s)")
+        return TransformationResult.Skipped(
+            "Skipped moving $filename: move processor rejected all ${suggestions.size} suggested directories (conflicts/exceptions/timeouts):\n${suggestions.joinToString("\n") { "  - $it" }}")
     }
 
     /**
@@ -370,6 +420,8 @@ class MoveFileIntoSuggestedDirectoryTransformation private constructor(
 /**
  * This wrapper delegates ALL methods to [MoveFilesOrDirectoriesProcessor].
  * It only exposes a protected [myFoundUsages] variable for enriched logging.
+ *
+ * @param onConflictsFoundCallback called when conflicts list is NOT empty in [showConflicts] method.
  */
 private class MoveFilesOrDirectoriesProcessorWrapper(
     project: Project,
@@ -378,6 +430,7 @@ private class MoveFilesOrDirectoriesProcessorWrapper(
     searchInComments: Boolean,
     searchInNonJavaFiles: Boolean,
     moveCallback: MoveCallback,
+    private val onConflictsFoundCallback: Runnable,
     prepareSuccessfulCallback: Runnable
 ) : MoveFilesOrDirectoriesProcessor(
     project,
@@ -390,6 +443,21 @@ private class MoveFilesOrDirectoriesProcessorWrapper(
 ) {
     val foundUsages: Map<PsiFile, List<UsageInfo>>
         get() = myFoundUsages
+
+    // BaseRefactoringProcessor.showConflicts throws ConflictsInTestsException in headless/test
+    // mode. Convert that into a graceful abort: log the conflicts and tell the base processor
+    // to skip the refactor (return false) — the calling loop then advances to the next suggestion.
+    override fun showConflicts(conflicts: MultiMap<PsiElement, String>, usages: Array<UsageInfo>?): Boolean {
+        if (!conflicts.isEmpty) {
+            // running callback on failed move operation
+            onConflictsFoundCallback.run()
+
+            val conflictStr = conflicts.values().joinToString("\n") { "    - $it;" }
+            thisLogger().withStdout().warn("    ⚠ Move blocked by ${conflicts.size()} conflict(s):\n'''\n$conflictStr\n'''")
+            return false
+        }
+        return super.showConflicts(conflicts, usages)
+    }
 }
 
 /**

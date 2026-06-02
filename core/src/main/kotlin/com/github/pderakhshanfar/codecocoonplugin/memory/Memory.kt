@@ -7,7 +7,7 @@ package com.github.pderakhshanfar.codecocoonplugin.memory
  * Use with `.use {}` blocks to guarantee data is saved:
  *
  * ```kotlin
- * PersistentMemory(projectName, memoryDir).use { memory ->
+ * PersistentMemory(memoryFilepath).use { memory ->
  *     memory.put("key", "value")
  *     // memory.save() called automatically on close
  * }

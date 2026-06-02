@@ -16,6 +16,7 @@ import com.github.pderakhshanfar.codecocoonplugin.transformation.requireOrDefaul
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.readAction
 import com.intellij.openapi.diagnostic.thisLogger
+import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.progress.ProcessCanceledException
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.roots.ProjectFileIndex
@@ -23,6 +24,7 @@ import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.psi.*
 import com.intellij.psi.util.PsiTreeUtil
 import com.intellij.refactoring.rename.RenameProcessor
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.Serializable
 
@@ -46,14 +48,59 @@ class RenameVariableTransformation(
         val result = try {
             val useMemory = config.requireOrDefault<Boolean>("useMemory", defaultValue = false)
             val generateWhenNotInMemory = config.requireOrDefault<Boolean>("generateWhenNotInMemory", defaultValue = false)
+            val searchInComments = config.requireOrDefault<Boolean>("searchInComments", defaultValue = false)
+
+            // Annotation filtering configuration (blacklist only - no whitelist support)
+            val blacklistedAnnotationsRaw = config.requireOrDefault<List<String>>("blacklistedAnnotations", defaultValue = emptyList())
+
+            // Process blacklist: merge defaults if "_default" or "default" is present
+            val blacklistedAnnotations = if (blacklistedAnnotationsRaw.any { it.equals("_default", ignoreCase = true) || it.equals("default", ignoreCase = true) }) {
+                logger.info("  ↳ Include default blacklisted annotations ALONG with the custom ones (i.e., '_default' or 'default' keyword in the list)")
+
+                val customAnnotations = blacklistedAnnotationsRaw.filter { !it.equals("_default", ignoreCase = true) && !it.equals("default", ignoreCase = true) }
+                (DEFAULT_BLACKLISTED_VARIABLE_ANNOTATIONS + customAnnotations).toList()
+            } else {
+                // Warn if using blacklist mode without defaults
+                if (blacklistedAnnotationsRaw.isNotEmpty()) {
+                    logger.warn("  ⚠ Blacklist provided without '_default' keyword - framework annotations will NOT be automatically excluded")
+                }
+                blacklistedAnnotationsRaw
+            }
 
             val document = withReadAction { psiFile.document() }
             val modifiedFiles = mutableSetOf<PsiFile>()
             val value = if (document != null) {
-                val eligibleVariables: List<PsiVariable> = withReadAction { findAllValidVariables(psiFile) }
+                val eligibleVariables: List<PsiVariable> = withReadAction {
+                    findAllValidVariables(psiFile, blacklistedAnnotations)
+                }
 
                 if (eligibleVariables.isEmpty()) {
                     return TransformationResult.Skipped("No matching variables found in ${virtualFile.name}")
+                }
+
+                // Snapshot every variable's signature BEFORE any rename happens. Regenerating
+                // the signature mid-loop is unsafe: when a field is renamed, IntelliJ's
+                // RenameProcessor cascade-renames the constructor parameter bound to it via
+                // `this.x = x`, so a later `psiVar.name` for that parameter would already be
+                // the post-cascade name and the memory key would be wrong.
+                val signatures: Map<PsiVariable, String> = withReadAction {
+                    eligibleVariables.mapNotNull { psiVar ->
+                        PsiSignatureGenerator.generateSignature(psiVar)?.let { psiVar to it }
+                    }.toMap()
+                }
+
+                // Process inner scopes first so the field-rename cascade has nothing to
+                // latch onto: by the time a PsiField is renamed, any constructor parameter
+                // that used to share its name has already been renamed to its own
+                // LLM-suggested name, so RenameJavaFieldProcessor's "rename the bound
+                // parameter" condition (matching name) no longer holds.
+                val orderedVariables = eligibleVariables.sortedBy { v ->
+                    when (v) {
+                        is PsiLocalVariable -> 0
+                        is PsiParameter -> 1
+                        is PsiField -> 2
+                        else -> 3
+                    }
                 }
 
                 logger.info("  ⏲ Generating rename suggestions for ${eligibleVariables.size} variables...")
@@ -71,12 +118,11 @@ class RenameVariableTransformation(
                 val saveRenamesInMemory = !useMemory || generateWhenNotInMemory
 
                 // Try renaming each variable with suggestions until one succeeds
-                val successfulRenames = eligibleVariables.mapNotNull { psiVar ->
+                val successfulRenames = orderedVariables.mapNotNull { psiVar ->
                     val varName = withReadAction { psiVar.name }
                     val suggestions = renaming.suggestions[psiVar] ?: return@mapNotNull null
 
-                    // Generate signature BEFORE renaming
-                    val signature = withReadAction { PsiSignatureGenerator.generateSignature(psiVar) }
+                    val signature = signatures[psiVar]
                     if (signature == null) {
                         logger.warn("    ⊘ Could not generate signature for variable $varName")
                         return@mapNotNull null
@@ -84,7 +130,7 @@ class RenameVariableTransformation(
 
                     // Try each suggestion until one succeeds (no conflicts)
                     for (suggestion in suggestions) {
-                        val files = tryRenameVariableAndUsages(psiFile.project, psiVar, suggestion)
+                        val files = tryRenameVariableAndUsages(psiFile.project, psiVar, suggestion, searchInComments)
                         if (files != null) {
                             modifiedFiles.addAll(files)
                             if (saveRenamesInMemory) {
@@ -266,6 +312,41 @@ class RenameVariableTransformation(
     ): List<VariableRenaming> {
         if (variables.isEmpty()) return emptyList()
 
+        // Split variables into chunks so a single transient LLM failure (timeout,
+        // malformed JSON, token-budget overflow on huge files) doesn't lose the
+        // suggestions for the entire file. Files with <= LLM_BATCH_SIZE variables
+        // still produce one LLM call, matching the prior single-call behaviour.
+        val batches = variables.chunked(LLM_BATCH_SIZE)
+        if (batches.size > 1) {
+            logger.info("  ↳ Splitting ${variables.size} variables into ${batches.size} LLM batches of up to $LLM_BATCH_SIZE")
+        }
+
+        val combined = mutableListOf<VariableRenaming>()
+        for ((index, batch) in batches.withIndex()) {
+            val partial = generateBatchWithRetry(
+                variables = batch,
+                count = count,
+                batchLabel = "${index + 1}/${batches.size}",
+            )
+            combined.addAll(partial)
+        }
+        return combined
+    }
+
+    /**
+     * Calls the LLM for a single batch of variables, retrying transient errors
+     * with exponential backoff. Returns an empty list if every retry fails — the
+     * caller's per-variable loop then skips those variables (no rename, no memory
+     * write) instead of failing the whole transformation, so other batches and
+     * other files still progress.
+     *
+     * Rethrows [ProcessCanceledException] per IntelliJ contract.
+     */
+    private suspend fun generateBatchWithRetry(
+        variables: List<PsiVariable>,
+        count: Int,
+        batchLabel: String,
+    ): List<VariableRenaming> {
         val contexts = readAction { variables.map { buildVariableContext(it) } }
 
         val varRenamePrompt = prompt("variable-rename-batch-prompt") {
@@ -296,37 +377,55 @@ class RenameVariableTransformation(
             }
         }
 
-
         val llm = LLM.fromGrazie(OpenAIModels.Chat.GPT5Mini)
-        val result = llm.structuredRequest<VariableRenameSuggestions>(
-            prompt = varRenamePrompt
-        )
 
-        return result?.renamings ?: emptyList()
+        var lastError: Throwable? = null
+        for (attempt in 1..LLM_MAX_ATTEMPTS) {
+            try {
+                val result = llm.structuredRequest<VariableRenameSuggestions>(prompt = varRenamePrompt)
+                return result?.renamings ?: emptyList()
+            } catch (e: ProcessCanceledException) {
+                throw e
+            } catch (e: Exception) {
+                lastError = e
+                logger.warn("    ⚠ LLM call for variable batch $batchLabel failed (attempt $attempt/$LLM_MAX_ATTEMPTS): ${e.message}")
+                if (attempt < LLM_MAX_ATTEMPTS) {
+                    delay(retryBackoffMillis(attempt))
+                }
+            }
+        }
+        logger.warn("    ✗ LLM call for variable batch $batchLabel exhausted $LLM_MAX_ATTEMPTS attempts; skipping batch (last error: ${lastError?.message})")
+        return emptyList()
+    }
+
+    private fun retryBackoffMillis(attempt: Int): Long {
+        // 1s, 2s, 4s, ... capped at LLM_RETRY_BACKOFF_CAP_MILLIS
+        val base = LLM_RETRY_BACKOFF_BASE_MILLIS shl (attempt - 1).coerceAtLeast(0)
+        return base.coerceAtMost(LLM_RETRY_BACKOFF_CAP_MILLIS)
     }
 
     private fun tryRenameVariableAndUsages(
-        project: Project, psiVariable: PsiVariable, newName: String
+        project: Project,
+        psiVariable: PsiVariable,
+        newName: String,
+        searchInComments: Boolean,
     ): MutableSet<PsiFile>? {
         return try {
             val oldName = withReadAction { psiVariable.name } ?: return null
-            // isSearchInComments needs to be false. If true, it would breaks functionality by changing string literals.
-            // example would be mappings of `PathVariable` from Spring.
-            // `@param [paramName]` definitions in the Javadocs are still being renamed.
             val renameProcessor = withReadAction { RenameProcessor(
                     /* project = */ project,
                     /* element = */ psiVariable,
                     /* newName = */ newName,
-                    /* isSearchInComments= */ false,
+                    /* isSearchInComments= */ searchInComments,
                     /* isSearchTextOccurrences = */ false
                 )
             }
 
-            ApplicationManager.getApplication().invokeAndWait {
-                PsiDocumentManager.getInstance(project).commitAllDocuments()
-                renameProcessor.run()
-            }
-
+            // Snapshot modified files BEFORE run(): findUsages() must run on
+            // the pre-rename PSI to return the references that will actually
+            // be rewritten. After run() the seed element has been renamed and
+            // the result is unreliable — that previously caused the Javadoc
+            // `@param` tag to be rewritten in some morph runs but not others.
             val modifiedFiles = withReadAction {
                 val files = mutableSetOf<PsiFile>()
                 renameProcessor.findUsages().forEach { usageInfo ->
@@ -334,6 +433,17 @@ class RenameVariableTransformation(
                 }
                 psiVariable.containingFile?.let { files.add(it) }
                 files
+            }
+
+            ApplicationManager.getApplication().invokeAndWait {
+                PsiDocumentManager.getInstance(project).commitAllDocuments()
+                renameProcessor.run()
+                // Lock in PSI/document/disk state immediately so subsequent renames
+                // (and the final project close) don't trigger close-time hooks whose
+                // behaviour depends on accumulated unflushed state — that previously
+                // produced non-deterministic import positions across morph runs.
+                PsiDocumentManager.getInstance(project).commitAllDocuments()
+                FileDocumentManager.getInstance().saveAllDocuments()
             }
 
             val fileCountString = if (modifiedFiles.size > 1) " in ${modifiedFiles.size} files" else ""
@@ -351,14 +461,108 @@ class RenameVariableTransformation(
     }
 
     /**
+     * Checks if annotations pass the blacklist filter.
+     * Variables renaming supports ONLY blacklist mode (no whitelist).
+     *
+     * @param annotations List of annotations to check
+     * @param blacklistedAnnotations Annotations to forbid (blacklist mode)
+     * @return true if annotations pass the filter (none are blacklisted), false otherwise
+     */
+    private fun passesAnnotationFilter(
+        annotations: List<PsiAnnotation>,
+        blacklistedAnnotations: List<String>,
+    ): Boolean {
+        if (annotations.isEmpty()) {
+            return true
+        }
+
+        // Blacklist mode: No annotations can be in the blacklist
+        return annotations.none { annotation ->
+            val qualifiedName = annotation.qualifiedName
+            val simpleName = qualifiedName?.substringAfterLast('.')
+            qualifiedName in blacklistedAnnotations || simpleName in blacklistedAnnotations
+        }
+    }
+
+    /**
+     * Checks if a single variable passes all filtering criteria.
+     * Returns true if the variable should be included, false otherwise.
+     */
+    private fun passesVariableFilters(
+        variable: PsiVariable,
+        psiFile: PsiFile,
+        blacklistedVariableAnnotations: List<String>,
+    ): Boolean {
+        val fileIndex = ProjectFileIndex.getInstance(psiFile.project)
+
+        // 1. Exclude Test Sources
+        if (fileIndex.isInTestSourceContent(psiFile.virtualFile)) {
+            logger.info("      ⊘ Variable `${variable.name}` - skipped (in test source)")
+            return false
+        }
+
+        // 2. Exclude Enum Constants
+        if (variable is PsiEnumConstant) {
+            logger.info("      ⊘ Variable `${variable.name}` - skipped (is enum constant)")
+            return false
+        }
+
+        // 3. Annotation filter (blacklist mode only)
+        val variableAnnotations = variable.annotations.toList()
+        val annotationsPass = passesAnnotationFilter(
+            variableAnnotations,
+            blacklistedVariableAnnotations
+        )
+
+        // Log annotation filtering for variables with annotations
+        if (variableAnnotations.isNotEmpty()) {
+            val annotationNames = variableAnnotations.mapNotNull { it.qualifiedName?.substringAfterLast('.') }
+            if (annotationsPass) {
+                logger.info("      ✓ Variable `${variable.name}` with annotations [${annotationNames.joinToString(", ")}] - allowed (not blacklisted)")
+            } else {
+                logger.info("      ⊘ Variable `${variable.name}` with annotations [${annotationNames.joinToString(", ")}] - skipped (blacklisted)")
+                return false
+            }
+        }
+
+        // 4. Exclude Library/Compiled Code
+        if (variable is PsiCompiledElement || !variable.isPhysical) {
+            logger.info("      ⊘ Variable `${variable.name}` - skipped (compiled or non-physical)")
+            return false
+        }
+
+        // 5. Exclude public/protected fields (could cause external breaking changes)
+        if (variable is PsiField) {
+            if (variable.hasModifierProperty(PsiModifier.PUBLIC) || variable.hasModifierProperty(PsiModifier.PROTECTED)) {
+                logger.info("      ⊘ Variable `${variable.name}` - skipped (public/protected field)")
+                return false
+            }
+        }
+
+        return true
+    }
+
+    /**
      * Identifies and filters valid variables from the provided PSI file based on specific criteria.
-     * The filtering logic excludes variables in test sources, enum constants, variables annotated with `@Column`,
+     * The filtering logic excludes variables in test sources, enum constants, blacklisted annotations,
      * variables from library or compiled code, and public/protected fields that could cause external breaking changes.
      *
      * @param psiFile The PSI file to traverse and analyze for variables.
+     * @param blacklistedVariableAnnotations Annotations to exclude (blacklist mode).
      * @return A list of PSI variables matching all filtering criteria.
      */
-    private fun findAllValidVariables(psiFile: PsiFile): List<PsiVariable> {
+    private fun findAllValidVariables(
+        psiFile: PsiFile,
+        blacklistedVariableAnnotations: List<String>,
+    ): List<PsiVariable> {
+        // Log annotation filter configuration
+        if (blacklistedVariableAnnotations.isNotEmpty()) {
+            logger.info("  ↳ Annotation filter mode: BLACKLIST")
+            logger.info("  ↳ Blacklisted variable annotations: [\n${blacklistedVariableAnnotations.joinToString(",\n") { "\t$it" } }\n]")
+        } else {
+            logger.info("  ↳ Annotation filter mode: BLACKLIST (empty - all annotations allowed)")
+        }
+
         val variables = mutableListOf<PsiVariable>()
 
         psiFile.accept(object : PsiRecursiveElementVisitor() {
@@ -370,33 +574,8 @@ class RenameVariableTransformation(
             }
         })
 
-        val fileIndex = ProjectFileIndex.getInstance(psiFile.project)
-
         val filteredVariables = variables.filter { v ->
-            // 1. Exclude Test Sources
-            if (fileIndex.isInTestSourceContent(psiFile.virtualFile)) return@filter false
-
-            // 2. Exclude Enum Constants
-            if (v is PsiEnumConstant) return@filter false
-
-            // 3. Exclude @Column annotated variables
-            if (v.annotations.any { it.qualifiedName?.contains("Column") == true }) return@filter false
-
-            // 4. Exclude Library/Compiled Code
-            if (v !is PsiCompiledElement && v.isPhysical) {
-                // 5. Overrides Check (for fields/parameters)
-                // If a field overrides a superclass field, renaming it might break polymorphism or hide fields.
-                // Simple heuristic: Only rename private/package-private fields or local vars to stay safe.
-                if (v is PsiField) {
-                    if (v.hasModifierProperty(PsiModifier.PUBLIC) || v.hasModifierProperty(PsiModifier.PROTECTED)) {
-                        // Skip public/protected fields to avoid breaking external consumers or overrides
-                        return@filter false
-                    }
-                }
-                true
-            } else {
-                false
-            }
+            passesVariableFilters(v, psiFile, blacklistedVariableAnnotations)
         }
 
         if (filteredVariables.isNotEmpty()) {
@@ -410,5 +589,85 @@ class RenameVariableTransformation(
     companion object {
         const val ID = "rename-variable-transformation"
         private const val DEFAULT_SUGGESTED_NAMES_SIZE = 3
+
+        // Robustness knobs for the LLM batch call.
+        // LLM_BATCH_SIZE chosen so files with up to a few dozen variables still
+        // produce one call (preserving the prior single-call behaviour) while
+        // very large files are split, so a single transient failure no longer
+        // wipes out the whole file's renames.
+        private const val LLM_BATCH_SIZE = 40
+        private const val LLM_MAX_ATTEMPTS = 3
+        private const val LLM_RETRY_BACKOFF_BASE_MILLIS = 2_000L
+        private const val LLM_RETRY_BACKOFF_CAP_MILLIS = 8_000L
+
+        /**
+         * Default blacklisted variable annotations (framework/infrastructure annotations).
+         * These annotations typically indicate variables that are mapped to external systems,
+         * so renaming them could break runtime behavior or data binding.
+         */
+        val DEFAULT_BLACKLISTED_VARIABLE_ANNOTATIONS = setOf(
+            // JPA/Hibernate
+            "javax.persistence.Column",
+            "javax.persistence.Id",
+            "javax.persistence.GeneratedValue",
+            "javax.persistence.Version",
+            "javax.persistence.Temporal",
+            "javax.persistence.Enumerated",
+            "javax.persistence.Lob",
+            "javax.persistence.Basic",
+            "javax.persistence.EmbeddedId",
+            "javax.persistence.JoinColumn",
+            "jakarta.persistence.Column",
+            "jakarta.persistence.Id",
+            "jakarta.persistence.GeneratedValue",
+            "jakarta.persistence.Version",
+            "jakarta.persistence.Temporal",
+            "jakarta.persistence.Enumerated",
+            "jakarta.persistence.Lob",
+            "jakarta.persistence.Basic",
+            "jakarta.persistence.EmbeddedId",
+            "jakarta.persistence.JoinColumn",
+
+            // Jackson (JSON)
+            "com.fasterxml.jackson.annotation.JsonProperty",
+            "com.fasterxml.jackson.annotation.JsonIgnore",
+            "com.fasterxml.jackson.annotation.JsonAlias",
+
+            // JAXB (XML)
+            "javax.xml.bind.annotation.XmlElement",
+            "javax.xml.bind.annotation.XmlAttribute",
+            "javax.xml.bind.annotation.XmlTransient",
+            "javax.xml.bind.annotation.XmlID",
+            "jakarta.xml.bind.annotation.XmlElement",
+            "jakarta.xml.bind.annotation.XmlAttribute",
+            "jakarta.xml.bind.annotation.XmlTransient",
+            "jakarta.xml.bind.annotation.XmlID",
+
+            // Spring Framework
+            "org.springframework.beans.factory.annotation.Value",
+            "org.springframework.beans.factory.annotation.Autowired",
+            "org.springframework.beans.factory.annotation.Qualifier",
+            "javax.annotation.Resource",
+
+            // Bean Validation
+            "javax.validation.constraints.NotNull",
+            "javax.validation.constraints.Size",
+            "javax.validation.constraints.Min",
+            "javax.validation.constraints.Max",
+            "javax.validation.constraints.Pattern",
+            "javax.validation.constraints.Email",
+            "jakarta.validation.constraints.NotNull",
+            "jakarta.validation.constraints.Size",
+            "jakarta.validation.constraints.Min",
+            "jakarta.validation.constraints.Max",
+            "jakarta.validation.constraints.Pattern",
+            "jakarta.validation.constraints.Email",
+
+            // CDI
+            "javax.inject.Inject",
+            "javax.inject.Named",
+            "jakarta.inject.Inject",
+            "jakarta.inject.Named"
+        )
     }
 }

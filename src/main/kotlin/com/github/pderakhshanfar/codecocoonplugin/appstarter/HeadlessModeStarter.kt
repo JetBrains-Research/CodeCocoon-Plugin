@@ -1,11 +1,12 @@
 package com.github.pderakhshanfar.codecocoonplugin.appstarter
 
 import com.github.pderakhshanfar.codecocoonplugin.components.transformations.AddCommentTransformation
-import com.github.pderakhshanfar.codecocoonplugin.components.transformations.MoveFileIntoSuggestedDirectoryTransformation
+import com.github.pderakhshanfar.codecocoonplugin.components.transformations.structural.MoveFileIntoSuggestedDirectoryTransformation
 import com.github.pderakhshanfar.codecocoonplugin.components.transformations.TransformationRegistry
 import com.github.pderakhshanfar.codecocoonplugin.components.transformations.renaming.RenameClassTransformation
 import com.github.pderakhshanfar.codecocoonplugin.components.transformations.renaming.RenameMethodTransformation
 import com.github.pderakhshanfar.codecocoonplugin.components.transformations.renaming.RenameVariableTransformation
+import com.github.pderakhshanfar.codecocoonplugin.components.transformations.structural.ReorderClassMethodsTransformation
 import com.github.pderakhshanfar.codecocoonplugin.config.CodeCocoonConfig
 import com.github.pderakhshanfar.codecocoonplugin.config.ConfigLoader
 import com.github.pderakhshanfar.codecocoonplugin.intellij.JvmProjectConfigurator
@@ -18,11 +19,13 @@ import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.ApplicationStarter
 import com.intellij.openapi.components.service
 import com.intellij.openapi.diagnostic.thisLogger
+import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.project.ProjectManager
 import com.intellij.openapi.util.Disposer
 import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.openapi.vfs.VfsUtil
+import com.intellij.psi.PsiDocumentManager
 import com.intellij.psi.codeStyle.JavaCodeStyleSettings
 import kotlinx.coroutines.runBlocking
 import java.io.File
@@ -87,6 +90,15 @@ class HeadlessModeStarter : ApplicationStarter {
                 // close project and exit
                 logger.info("[CodeCocoon Starter] Execution completed")
 
+                // Final flush before close: commit any pending PSI changes and write
+                // documents to disk explicitly, so close-time hooks don't get a chance
+                // to introduce non-deterministic edits (e.g. import re-ordering whose
+                // outcome depends on accumulated unflushed state across rename calls).
+                ApplicationManager.getApplication().invokeAndWait {
+                    PsiDocumentManager.getInstance(project).commitAllDocuments()
+                    FileDocumentManager.getInstance().saveAllDocuments()
+                }
+
                 ApplicationManager.getApplication().invokeAndWait {
                     ProjectManager.getInstance().closeAndDispose(project)
                     logger.info("[CodeCocoon Starter] Project is closed successfully")
@@ -108,11 +120,20 @@ class HeadlessModeStarter : ApplicationStarter {
     }
 
     /**
-     * Configures code style settings to prevent wildcard imports.
+     * Configures code style settings to prevent ALL import optimizations.
      *
-     * This sets the import thresholds to very high values (9999) so that imports
-     * are never collapsed into wildcards (e.g., `import com.example.*`) during
-     * refactoring operations when `commitAllDocuments()` is called.
+     * This method configures multiple import-related settings to minimize unwanted
+     * import modifications during refactoring operations when `commitAllDocuments()` is called.
+     *
+     * **Settings configured:**
+     * 1. Prevents wildcard imports (e.g., `import com.example.*`)
+     * 2. Forces single class imports
+     * 3. Disables auto-insertion of inner class imports
+     * 4. Clears packages that should use wildcards
+     *
+     * **Limitations:**
+     * - Cannot prevent removal of unused imports (hardcoded in IntelliJ's optimize imports)
+     * - Cannot prevent removal of redundant same-package imports
      *
      * **Important:** Call this method once when the project is opened/initialized,
      * before running any transformations.
@@ -123,10 +144,22 @@ class HeadlessModeStarter : ApplicationStarter {
         val settings = CodeStyle.getSettings(project)
         val javaSettings = settings.getCustomSettings(JavaCodeStyleSettings::class.java)
 
-        // Set thresholds to 9999 to effectively disable wildcard imports
+        // 1. Set thresholds to 9999 to effectively disable wildcard imports
         // This prevents IntelliJ from collapsing multiple imports into import com.example.*
         javaSettings.classCountToUseImportOnDemand = 9999
         javaSettings.namesCountToUseImportOnDemand = 9999
+
+        // 2. Force single class imports (prevent wildcards)
+        javaSettings.isUseSingleClassImports = true
+
+        // 3. Don't auto-insert inner class imports
+        javaSettings.isInsertInnerClassImports = false
+
+        logger.info("[CodeCocoon Starter] Configured code style settings:")
+        logger.info("  - CLASS_COUNT_TO_USE_IMPORT_ON_DEMAND: ${javaSettings.classCountToUseImportOnDemand}")
+        logger.info("  - NAMES_COUNT_TO_USE_IMPORT_ON_DEMAND: ${javaSettings.namesCountToUseImportOnDemand}")
+        logger.info("  - USE_SINGLE_CLASS_IMPORTS: ${javaSettings.isUseSingleClassImports}")
+        logger.info("  - INSERT_INNER_CLASS_IMPORTS: ${javaSettings.isInsertInnerClassImports}")
     }
 
     private fun cleanIdeaFolder(projectPath: String) {
@@ -172,10 +205,13 @@ class HeadlessModeStarter : ApplicationStarter {
      * unique ID in the registry, allowing it to be referenced dynamically during execution.
      */
     private fun registerBuiltInTransformations() {
+        // renaming
         TransformationRegistry.register(AddCommentTransformation.ID) { config -> AddCommentTransformation(config) }
         TransformationRegistry.register(RenameMethodTransformation.ID) { config -> RenameMethodTransformation(config) }
         TransformationRegistry.register(RenameClassTransformation.ID) { config -> RenameClassTransformation(config) }
         TransformationRegistry.register(RenameVariableTransformation.ID) { config -> RenameVariableTransformation(config) }
+
+        // structural
         // move file transformation:
         // 1) with AI suggested directory
         TransformationRegistry.register(MoveFileIntoSuggestedDirectoryTransformation.Companion.AI.ID) { config ->
@@ -184,6 +220,10 @@ class HeadlessModeStarter : ApplicationStarter {
         // 2) with a config-defined suggested directory
         TransformationRegistry.register(MoveFileIntoSuggestedDirectoryTransformation.Companion.Config.ID) { config ->
             MoveFileIntoSuggestedDirectoryTransformation.withConfig(config)
+        }
+        // reorder class methods transformation
+        TransformationRegistry.register(ReorderClassMethodsTransformation.ID) { config ->
+            ReorderClassMethodsTransformation(config)
         }
     }
 

@@ -153,7 +153,7 @@ private fun buildSystemPrompt(projectRoot: String, existingOnly: Boolean): Strin
         
         CRITICAL RULES:
         - [!] OUTPUT ABSOLUTE PATHS BASED ON THE PROJECT ROOT!
-        - [!] DO NOT OUTPUT THE SAME DIRECTORY WHERE THE GIVEN FILE ALREADY RESIDES!
+        - [!] DO NOT SUGGEST THE `CURRENT DIRECTORY` LISTED IN THE USER PROMPT — that produces a no-op move and the suggestion will be discarded.
         - Never suggest locations that would cause naming conflicts
         - Prefer existing directories unless the class clearly belongs to a new feature module
         - Consider import dependencies visible in the source file
@@ -177,19 +177,23 @@ private fun buildSystemPrompt(projectRoot: String, existingOnly: Boolean): Strin
     return basePrompt + "\n\n" + directoryConstraint
 }
 
-private fun buildUserPrompt(filepath: String, content: String): String = """
-    Analyze this Java file and suggest appropriate directory locations.
-    
-    FILE PATH: $filepath
-    
-    FILE CONTENT (may be truncated):
-    ```java
-    $content
-    ```
-    
-    First, use the `list_directory` tool to understand the current project structure.
-    Then analyze the class and provide directory suggestions.
-""".trimIndent()
+private fun buildUserPrompt(filepath: String, content: String): String {
+    val currentDirectory = File(filepath).parent ?: filepath
+    return """
+        Analyze this Java file and suggest appropriate directory locations.
+
+        FILE PATH: $filepath
+        CURRENT DIRECTORY: $currentDirectory   ← DO NOT suggest this exact directory; doing so is a no-op move.
+
+        FILE CONTENT (may be truncated):
+        ```java
+        $content
+        ```
+
+        First, use the `list_directory` tool to understand the current project structure.
+        Then analyze the class and provide directory suggestions different from `CURRENT DIRECTORY`.
+    """.trimIndent()
+}
 
 // TODO: parse the requested JSON structure into data class, not list of strings
 private fun parseDirectorySuggestions(llmOutput: String): Result<List<String>> {

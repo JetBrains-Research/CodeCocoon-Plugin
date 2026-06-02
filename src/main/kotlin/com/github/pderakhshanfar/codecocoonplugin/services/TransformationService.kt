@@ -11,16 +11,18 @@ import com.github.pderakhshanfar.codecocoonplugin.intellij.vfs.findVirtualFile
 import com.github.pderakhshanfar.codecocoonplugin.intellij.vfs.relativeToRootOrAbsPath
 import com.github.pderakhshanfar.codecocoonplugin.memory.PersistentMemory
 import com.github.pderakhshanfar.codecocoonplugin.transformation.Transformation
+import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.smartReadAction
 import com.intellij.openapi.components.Service
 import com.intellij.openapi.diagnostic.thisLogger
+import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.project.guessProjectDir
 import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.openapi.vfs.VfsUtilCore
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.openapi.vfs.VirtualFileVisitor
-import java.io.File
+import com.intellij.psi.PsiDocumentManager
 
 /**
  * Application-level service responsible for managing metamorphic transformations
@@ -133,13 +135,17 @@ class TransformationService {
 
         // Create a global memory instance for the entire project
         // Memory is automatically saved via .use {} when the block exits
-        val projectName = project.basePath?.let { File(it).name } ?: project.name
-        PersistentMemory(projectName, config.memoryDir).use { memory ->
-            logger.info("[TransformationService] Created global memory for project '$projectName'")
+        PersistentMemory(config.memoryFilepath).use { memory ->
+            val transformationsStr = transformations.withIndex()
+                .joinToString(separator = ",\n") { "   ${it.index + 1}) ${it.value.id}" }
+            logger.info("[TransformationService] Applying the following transformations in order:\n$transformationsStr")
 
-            var successCount = 0
-            var failureCount = 0
-            var skippedCount = 0
+            logger.info("[TransformationService] Created global memory at '${config.memoryFilepath}'")
+
+            val succeededIds = mutableListOf<String>()
+            val failedIds = mutableListOf<String>()
+            val skippedIds = mutableListOf<String>()
+            var fileSkippedCount = 0
 
             // Collect and filter file contexts together with their virtual files
             logger.info("[TransformationService] Collecting file contexts for ${files.size} files...")
@@ -155,20 +161,21 @@ class TransformationService {
                             "  ✗ Failed to create file context for file: '$filePath'. Skipping this filepath.",
                             result.exceptionOrNull(),
                         )
-                        skippedCount++
+                        fileSkippedCount++
                         continue
                     }
 
                     val context = result.getOrThrow()
                     // filter unwanted files
                     if (!fileFilter(context)) {
-                        skippedCount++
+                        fileSkippedCount++
                         continue
                     }
                     add(context)
                 }
             }
             logger.info("[TransformationService] Successfully collected (and filtered) ${filteredFileContexts.size} file contexts")
+
 
             // for each file, apply all transformations
             for (context in filteredFileContexts) {
@@ -187,22 +194,44 @@ class TransformationService {
                         when (val result = executor.execute(transformation, context, memory)) {
                             is TransformationResult.Success -> {
                                 logger.info("    ✓ ${result.message}")
-                                successCount++
+                                succeededIds += transformation.id
                             }
                             is TransformationResult.Failure -> {
                                 logger.error("    ✗ ${result.error}", result.exception)
-                                failureCount++
+                                failedIds += transformation.id
                             }
                             is TransformationResult.Skipped -> {
                                 logger.info("    ⊘ Skipped: ${result.reason}")
-                                skippedCount++
+                                skippedIds += transformation.id
                             }
                         }
                     }
                 }
+
+                // Flush PSI changes to disk once per file context (cheaper than flushing after every rename).
+                ApplicationManager.getApplication().invokeAndWait {
+                    val commitStart = System.currentTimeMillis()
+                    logger.info("[TransformationService] Committing all documents for '$filepath'...")
+                    PsiDocumentManager.getInstance(project).commitAllDocuments()
+                    logger.info("[TransformationService] Committed all documents in ${System.currentTimeMillis() - commitStart}ms")
+
+                    val saveStart = System.currentTimeMillis()
+                    logger.info("[TransformationService] Saving all documents for '$filepath'...")
+                    FileDocumentManager.getInstance().saveAllDocuments()
+                    logger.info("[TransformationService] Saved all documents in ${System.currentTimeMillis() - saveStart}ms")
+                }
             }
 
-            logger.info("[TransformationService] Transformation summary: $successCount succeeded, $failureCount failed, $skippedCount skipped")
+            val header = buildString {
+                append("[TransformationService] Transformation summary: ")
+                append("${succeededIds.size} succeeded, ${failedIds.size} failed, ${skippedIds.size} skipped")
+                if (fileSkippedCount > 0) append(", $fileSkippedCount files skipped")
+                append(":")
+            }
+            logger.info(header)
+            logger.info("[TransformationService]      - succeeded: ${succeededIds.joinToString(", ")}")
+            logger.info("[TransformationService]      - failed:    ${failedIds.joinToString(", ")}")
+            logger.info("[TransformationService]      - skipped:   ${skippedIds.joinToString(", ")}")
         }
     }
 
